@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "api": "node server/authServer.js",
     "build": "vite build",
     "preview": "vite preview"
   },

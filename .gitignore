@@ -186,5 +186,9 @@ playwright-report/
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
+# Local auth API data
+server/data/*.json
+!server/data/.gitkeep
+
 # Gemini AI agent
 .gemini/
