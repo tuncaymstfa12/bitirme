@@ -1,0 +1,190 @@
+# ===========================
+# Node.js & Package Managers
+# ===========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-store/
+.yarn/
+.npm/
+package-lock.json
+
+# ===========================
+# Build & Output
+# ===========================
+dist/
+dist-ssr/
+build/
+out/
+.output/
+*.local
+.cache/
+.parcel-cache/
+.turbo/
+
+# ===========================
+# Exam Questions & Documents
+# ===========================
+*.pdf
+*.txt
+!README.txt
+*.doc
+*.docx
+*.xls
+*.xlsx
+*.ppt
+*.pptx
+*.odt
+*.ods
+*.odp
+*.rtf
+*.csv
+*.epub
+
+# ===========================
+# Images (if not needed in repo)
+# ===========================
+# Uncomment below if you want to ignore images
+# *.png
+# *.jpg
+# *.jpeg
+# *.gif
+# *.bmp
+# *.svg
+# *.ico
+# *.webp
+
+# ===========================
+# Archives & Compressed Files
+# ===========================
+*.zip
+*.rar
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+*.bz2
+
+# ===========================
+# Environment & Secrets
+# ===========================
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.cert
+*.crt
+*.p12
+*.pfx
+
+# ===========================
+# Logs
+# ===========================
+logs/
+*.log
+*.log.*
+
+# ===========================
+# OS Generated Files
+# ===========================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.stackdump
+[Dd]esktop.ini
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# ===========================
+# Editor & IDE Files
+# ===========================
+# VS Code
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# JetBrains (WebStorm, IntelliJ, etc.)
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim / Neovim
+*.sw?
+*.swo
+*.swn
+*~
+Session.vim
+.netrwhist
+tags
+
+# Emacs
+*~
+\#*\#
+.#*
+auto-save-list/
+
+# Visual Studio
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.user
+*.vs/
+
+# ===========================
+# Testing & Coverage
+# ===========================
+coverage/
+.nyc_output/
+*.lcov
+.jest/
+jest-results/
+test-results/
+playwright-report/
+
+# ===========================
+# Miscellaneous
+# ===========================
+*.bak
+*.backup
+*.tmp
+*.temp
+*.orig
+*.pid
+*.seed
+*.pid.lock
+.eslintcache
+.stylelintcache
+.prettier-cache
+
+# Vite specific
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Gemini AI agent
+.gemini/
