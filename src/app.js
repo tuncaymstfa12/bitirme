@@ -6,23 +6,26 @@
 import './styles/main.css';
 import { createExam, createTopic, createMockResult } from './data/models.js';
 import { store } from './data/store.js';
+import { t } from './data/i18n.js';
+import { applyTheme } from './data/theme.js';
 import { fetchCurrentUserApi, logoutUserApi } from './api/authApi.js';
 import { renderDashboard } from './ui/dashboard.js';
 import { renderExamManager } from './ui/examManager.js';
 import { renderScheduleView } from './ui/scheduleView.js';
 import { renderAnalytics } from './ui/analytics.js';
 import { renderSettings } from './ui/settings.js';
+import { startNotificationEngine, stopNotificationEngine } from './engine/notifications.js';
 import { showToast } from './ui/components.js';
 import { renderAuthView } from './ui/authView.js';
 
 window.__models = { createExam, createTopic, createMockResult };
 
 const routes = {
-  dashboard: { label: 'Dashboard', icon: '📊', render: renderDashboard },
-  exams: { label: 'Exam Manager', icon: '🎓', render: renderExamManager },
-  schedule: { label: 'Schedule', icon: '🗓', render: renderScheduleView },
-  analytics: { label: 'Analytics', icon: '📈', render: renderAnalytics },
-  settings: { label: 'Settings', icon: '⚙️', render: renderSettings },
+  dashboard: { labelKey: 'nav.dashboard', icon: '📊', render: renderDashboard },
+  exams: { labelKey: 'nav.exams', icon: '🎓', render: renderExamManager },
+  schedule: { labelKey: 'nav.schedule', icon: '🗓', render: renderScheduleView },
+  analytics: { labelKey: 'nav.analytics', icon: '📈', render: renderAnalytics },
+  settings: { labelKey: 'nav.settings', icon: '⚙️', render: renderSettings },
 };
 
 let currentRoute = 'dashboard';
@@ -57,6 +60,7 @@ async function bootstrapSession() {
 function renderCurrentShell() {
   if (currentUser) {
     renderAppShell();
+    startNotificationEngine();
     navigateTo(window.location.hash.replace('#', '') || currentRoute || 'dashboard');
     return;
   }
@@ -70,7 +74,7 @@ function renderLoadingState() {
     <div class="auth-shell">
       <div class="auth-loading">
         <div class="auth-loading-spinner"></div>
-        <p>Checking session…</p>
+        <p>${t('app.checkingSession')}</p>
       </div>
     </div>
   `;
@@ -86,8 +90,8 @@ function renderAuthShell() {
       currentUser = user;
       authBootError = '';
       showToast({
-        title: 'Signed in',
-        message: `Welcome, ${user.name}.`,
+        title: t('auth.signedIn'),
+        message: t('auth.welcomeMsg', { name: user.name }),
         type: 'success',
       });
       renderCurrentShell();
@@ -103,19 +107,19 @@ function renderAppShell() {
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-brand">
-        <h1>StudyEngine</h1>
-        <p>Adaptive Planner</p>
+        <h1>${t('app.title')}</h1>
+        <p>${t('app.subtitle')}</p>
       </div>
       <nav class="sidebar-nav" id="sidebar-nav"></nav>
       <div class="sidebar-footer">
         <div class="sidebar-engine-card">
-          <div class="sidebar-engine-label">Rule-Based Engine</div>
-          <div class="sidebar-engine-text">Heuristic scoring · Weighted priorities · Dynamic scheduling</div>
+          <div class="sidebar-engine-label">${t('app.engineLabel')}</div>
+          <div class="sidebar-engine-text">${t('app.engineDesc')}</div>
         </div>
         <div class="sidebar-user-card">
           <div class="sidebar-user-name">${escapeHtml(currentUser?.name || 'User')}</div>
           <div class="sidebar-user-email">${escapeHtml(currentUser?.email || '')}</div>
-          <button class="btn btn-secondary btn-sm" id="logout-btn" style="width: 100%; margin-top: var(--space-sm);">Log Out</button>
+          <button class="btn btn-secondary btn-sm" id="logout-btn" style="width: 100%; margin-top: var(--space-sm);">${t('app.logout')}</button>
         </div>
       </div>
     </aside>
@@ -152,7 +156,7 @@ function renderNav() {
     return `
       <a class="nav-item ${currentRoute === key ? 'active' : ''}" data-route="${key}" href="#${key}">
         <span class="nav-icon">${route.icon}</span>
-        <span>${route.label}</span>
+        <span>${t(route.labelKey)}</span>
         ${badge}
       </a>
     `;
@@ -199,7 +203,7 @@ async function handleLogout() {
     await logoutUserApi();
   } catch (error) {
     showToast({
-      title: 'Logout failed',
+      title: t('auth.logoutFailed'),
       message: error.message,
       type: 'error',
     });
@@ -208,6 +212,7 @@ async function handleLogout() {
 
   currentUser = null;
   authBootError = '';
+  stopNotificationEngine();
   renderCurrentShell();
 }
 

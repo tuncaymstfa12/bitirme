@@ -3,6 +3,8 @@
  * Modal, Toast, Charts (Canvas), and helper renderers
  */
 
+import { formatDateLocale, formatDateFullLocale } from '../data/i18n.js';
+
 // ===== Modal =====
 let activeModal = null;
 
@@ -331,13 +333,11 @@ export function drawDonutChart(canvas, segments, options = {}) {
 // ===== Helper Renderers =====
 
 export function formatDate(dateString) {
-  const date = new Date(dateString);
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return formatDateLocale(dateString);
 }
 
 export function formatDateFull(dateString) {
-  const date = new Date(dateString);
-  return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  return formatDateFullLocale(dateString);
 }
 
 export function formatTime(hour, minute) {

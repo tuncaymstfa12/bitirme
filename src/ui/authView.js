@@ -1,5 +1,6 @@
 import { registerUserApi, loginUserApi } from '../api/authApi.js';
 import { getAllLessonsForGrade } from '../data/auth.js';
+import { t } from '../data/i18n.js';
 
 export function renderAuthView(container, { onAuthenticated, initialError = '' } = {}) {
   const state = {
@@ -27,29 +28,25 @@ export function renderAuthView(container, { onAuthenticated, initialError = '' }
     container.innerHTML = `
       <div class="auth-layout animate-fade-in">
         <section class="auth-hero">
-          <span class="auth-kicker">StudyEngine</span>
-          <h1>Adaptive planning for exam preparation.</h1>
-          <p>
-            Sign in to manage exams, generate schedules, and track weak topics with the rule-based planner.
-          </p>
+          <span class="auth-kicker">${t('auth.kicker')}</span>
+          <h1>${t('auth.heroTitle')}</h1>
+          <p>${t('auth.heroDesc')}</p>
           <div class="auth-feature-list">
-            <div class="auth-feature-item">Priority scoring based on urgency, weight, weakness, and performance</div>
-            <div class="auth-feature-item">Weekly schedule generation and missed-session recovery</div>
-            <div class="auth-feature-item">Analytics for mastery, trend, and study consistency</div>
+            <div class="auth-feature-item">${t('auth.feature1')}</div>
+            <div class="auth-feature-item">${t('auth.feature2')}</div>
+            <div class="auth-feature-item">${t('auth.feature3')}</div>
           </div>
         </section>
 
         <section class="auth-panel card">
           <div class="tabs auth-tabs">
-            <button class="tab ${state.mode === 'login' ? 'active' : ''}" data-mode="login">Login</button>
-            <button class="tab ${state.mode === 'register' ? 'active' : ''}" data-mode="register">Register</button>
+            <button class="tab ${state.mode === 'login' ? 'active' : ''}" data-mode="login">${t('auth.login')}</button>
+            <button class="tab ${state.mode === 'register' ? 'active' : ''}" data-mode="register">${t('auth.register')}</button>
           </div>
 
           <div class="auth-panel-head">
-            <h2>${state.mode === 'login' ? 'Welcome back' : 'Create your account'}</h2>
-            <p>${state.mode === 'login'
-              ? 'Use your email and password to continue.'
-              : 'Fill in your exam profile to start generating plans.'}</p>
+            <h2>${state.mode === 'login' ? t('auth.welcomeBack') : t('auth.createAccount')}</h2>
+            <p>${state.mode === 'login' ? t('auth.loginDesc') : t('auth.registerDesc')}</p>
           </div>
 
           ${state.error ? `<div class="auth-feedback error">${escapeHtml(state.error)}</div>` : ''}
@@ -99,7 +96,7 @@ export function renderAuthView(container, { onAuthenticated, initialError = '' }
       onAuthenticated?.(result.user);
     } catch (error) {
       state.busy = false;
-      state.error = `${error.message} If the API is not running, start it with npm run api.`;
+      state.error = `${error.message} ${t('auth.apiError')}`;
       render();
     }
   }
@@ -144,7 +141,7 @@ export function renderAuthView(container, { onAuthenticated, initialError = '' }
       onAuthenticated?.(result.user);
     } catch (error) {
       state.busy = false;
-      state.error = `${error.message} If the API is not running, start it with npm run api.`;
+      state.error = `${error.message} ${t('auth.apiError')}`;
       render();
     }
   }
@@ -156,15 +153,15 @@ function renderLoginForm(state) {
   return `
     <form id="login-form" class="auth-form">
       <div class="form-group">
-        <label class="form-label">Email</label>
-        <input class="form-input" type="email" name="email" placeholder="student@example.com" value="${escapeHtml(state.login.email)}" required>
+        <label class="form-label">${t('auth.email')}</label>
+        <input class="form-input" type="email" name="email" placeholder="${t('auth.emailPlaceholder')}" value="${escapeHtml(state.login.email)}" required>
       </div>
       <div class="form-group">
-        <label class="form-label">Password</label>
-        <input class="form-input" type="password" name="password" placeholder="Minimum 6 characters" value="${escapeHtml(state.login.password)}" required>
+        <label class="form-label">${t('auth.password')}</label>
+        <input class="form-input" type="password" name="password" placeholder="${t('auth.passwordPlaceholder')}" value="${escapeHtml(state.login.password)}" required>
       </div>
       <button class="btn btn-primary btn-lg" type="submit" ${state.busy ? 'disabled' : ''}>
-        ${state.busy ? 'Signing in…' : 'Log In'}
+        ${state.busy ? t('auth.signingIn') : t('auth.loginBtn')}
       </button>
     </form>
   `;
@@ -175,50 +172,50 @@ function renderRegisterForm(state, lessons) {
     <form id="register-form" class="auth-form">
       <div class="grid-2 auth-grid">
         <div class="form-group">
-          <label class="form-label">Full name</label>
-          <input class="form-input" type="text" name="name" placeholder="Student Name" value="${escapeHtml(state.register.name)}" required>
+          <label class="form-label">${t('auth.fullName')}</label>
+          <input class="form-input" type="text" name="name" placeholder="${t('auth.namePlaceholder')}" value="${escapeHtml(state.register.name)}" required>
         </div>
         <div class="form-group">
-          <label class="form-label">Email</label>
-          <input class="form-input" type="email" name="email" placeholder="student@example.com" value="${escapeHtml(state.register.email)}" required>
+          <label class="form-label">${t('auth.email')}</label>
+          <input class="form-input" type="email" name="email" placeholder="${t('auth.emailPlaceholder')}" value="${escapeHtml(state.register.email)}" required>
         </div>
       </div>
 
       <div class="grid-2 auth-grid">
         <div class="form-group">
-          <label class="form-label">Password</label>
-          <input class="form-input" type="password" name="password" placeholder="Minimum 6 characters" value="${escapeHtml(state.register.password)}" required>
+          <label class="form-label">${t('auth.password')}</label>
+          <input class="form-input" type="password" name="password" placeholder="${t('auth.passwordPlaceholder')}" value="${escapeHtml(state.register.password)}" required>
         </div>
         <div class="form-group">
-          <label class="form-label">Unique ID</label>
-          <input class="form-input" type="text" name="uniqueId" placeholder="e.g. mtunc11" value="${escapeHtml(state.register.uniqueId)}" required>
+          <label class="form-label">${t('auth.uniqueId')}</label>
+          <input class="form-input" type="text" name="uniqueId" placeholder="${t('auth.uniqueIdPlaceholder')}" value="${escapeHtml(state.register.uniqueId)}" required>
         </div>
       </div>
 
       <div class="form-group">
-        <label class="form-label">Grade</label>
+        <label class="form-label">${t('auth.grade')}</label>
         <select class="form-select" id="register-grade" name="grade">
-          <option value="11" ${state.grade === '11' ? 'selected' : ''}>11th Grade</option>
-          <option value="12" ${state.grade === '12' ? 'selected' : ''}>12th Grade</option>
+          <option value="11" ${state.grade === '11' ? 'selected' : ''}>${t('auth.grade11')}</option>
+          <option value="12" ${state.grade === '12' ? 'selected' : ''}>${t('auth.grade12')}</option>
         </select>
       </div>
 
       <div class="form-group">
-        <label class="form-label">Strong lessons</label>
+        <label class="form-label">${t('auth.strongLessons')}</label>
         <div class="auth-chip-grid">
           ${lessons.map(lesson => renderLessonCheckbox(lesson, 'strongLectures', state.register.strongLectures)).join('')}
         </div>
       </div>
 
       <div class="form-group">
-        <label class="form-label">Weak lessons</label>
+        <label class="form-label">${t('auth.weakLessons')}</label>
         <div class="auth-chip-grid">
           ${lessons.map(lesson => renderLessonCheckbox(lesson, 'weakLectures', state.register.weakLectures)).join('')}
         </div>
       </div>
 
       <button class="btn btn-primary btn-lg" type="submit" ${state.busy ? 'disabled' : ''}>
-        ${state.busy ? 'Creating account…' : 'Create Account'}
+        ${state.busy ? t('auth.creatingAccount') : t('auth.createBtn')}
       </button>
     </form>
   `;

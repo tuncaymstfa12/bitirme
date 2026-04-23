@@ -4,6 +4,7 @@
  */
 
 import { store } from '../data/store.js';
+import { t } from '../data/i18n.js';
 import { createExam, createTopic, createMockResult } from '../data/models.js';
 import { showModal, closeModal, showToast, formatDate, daysUntil, renderStars } from './components.js';
 
@@ -13,46 +14,46 @@ export function renderExamManager(container) {
 
   container.innerHTML = `
     <div class="page-header">
-      <h2>🎓 Exam Manager</h2>
-      <p>Manage your exams, topics, weights, and self-assessments</p>
+      <h2>🎓 ${t('exams.title')}</h2>
+      <p>${t('exams.subtitle')}</p>
     </div>
 
     <div style="display: flex; gap: var(--space-sm); margin-bottom: var(--space-xl);">
-      <button class="btn btn-primary btn-lg" id="add-exam-btn">+ Add Exam</button>
-      <button class="btn btn-secondary btn-lg" id="add-mock-btn">📝 Add Mock Result</button>
+      <button class="btn btn-primary btn-lg" id="add-exam-btn">${t('exams.addExam')}</button>
+      <button class="btn btn-secondary btn-lg" id="add-mock-btn">${t('exams.addMock')}</button>
     </div>
 
     ${exams.length === 0 
       ? `<div class="card">
           <div class="empty-state">
             <div class="empty-icon">🎓</div>
-            <h3>No Exams Yet</h3>
-            <p>Start by adding your upcoming exams and their topics. The system will calculate priorities and create your study plan.</p>
-            <button class="btn btn-primary" id="add-exam-btn-empty">+ Add Your First Exam</button>
+            <h3>${t('exams.noExams')}</h3>
+            <p>${t('exams.noExamsDesc')}</p>
+            <button class="btn btn-primary" id="add-exam-btn-empty">${t('exams.addFirstExam')}</button>
           </div>
         </div>`
-      : exams.map(exam => {
+      : exams.map((exam, index) => {
           const examTopics = topics.filter(t => t.examId === exam.id);
           const days = daysUntil(exam.date);
           return `
-            <div class="exam-card animate-fade-in" style="margin-bottom: var(--space-lg);">
+            <div class="exam-card animate-fade-in-up" style="margin-bottom: var(--space-lg); animation-delay: ${0.1 * index}s">
               <div class="exam-card-header">
                 <div class="exam-info">
                   <span class="exam-color-lg" style="background: ${exam.color}"></span>
                   <div>
                     <div class="exam-name">${exam.name}</div>
-                    <div class="exam-date">${formatDate(exam.date)} · ${days >= 0 ? days + ' days left' : 'Past'}</div>
+                    <div class="exam-date">${formatDate(exam.date)} · ${days >= 0 ? days + ' ' + t('dashboard.daysLeft') : t('exams.past')}</div>
                   </div>
                 </div>
                 <div style="display: flex; gap: var(--space-xs);">
-                  <button class="btn btn-sm btn-secondary add-topic-btn" data-exam-id="${exam.id}">+ Topic</button>
+                  <button class="btn btn-sm btn-secondary add-topic-btn" data-exam-id="${exam.id}">${t('exams.addTopic')}</button>
                   <button class="btn btn-sm btn-secondary edit-exam-btn" data-exam-id="${exam.id}">✎</button>
                   <button class="btn btn-sm btn-danger delete-exam-btn" data-exam-id="${exam.id}">🗑</button>
                 </div>
               </div>
               <div class="exam-card-body">
                 ${examTopics.length === 0 
-                  ? '<p style="color: var(--text-tertiary); font-size: var(--font-sm); padding: var(--space-sm);">No topics added yet. Click "+ Topic" to add study topics.</p>'
+                  ? `<p style="color: var(--text-tertiary); font-size: var(--font-sm); padding: var(--space-sm);">${t('exams.noTopics')}</p>`
                   : examTopics.map(topic => {
                       const mockResults = store.getMockResults(topic.id);
                       return `
@@ -61,10 +62,10 @@ export function renderExamManager(container) {
                           <div class="topic-main">
                             <div class="topic-name">${topic.name}</div>
                             <div class="topic-meta">
-                              <span>Weight: ${topic.weight}/10</span>
-                              <span>Self: ${renderStars(topic.selfAssessment)}</span>
-                              <span>Est: ${topic.estimatedMinutes}min</span>
-                              ${mockResults.length > 0 ? `<span>Tests: ${mockResults.length}</span>` : ''}
+                              <span>${t('exams.weight')}: ${topic.weight}/10</span>
+                              <span>${t('exams.self')}: ${renderStars(topic.selfAssessment)}</span>
+                              <span>${t('exams.est')}: ${topic.estimatedMinutes}${t('exams.min')}</span>
+                              ${mockResults.length > 0 ? `<span>${t('exams.tests')}: ${mockResults.length}</span>` : ''}
                             </div>
                           </div>
                           <div class="topic-actions">
@@ -113,9 +114,9 @@ function bindExamManagerEvents(container) {
   container.querySelectorAll('.delete-exam-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const exam = store.getExam(btn.dataset.examId);
-      if (exam && confirm(`Delete "${exam.name}" and all its topics?`)) {
+      if (exam && confirm(t('exams.confirmDelete', { name: exam.name }))) {
         store.deleteExam(exam.id);
-        showToast({ title: 'Exam Deleted', message: `${exam.name} has been removed.`, type: 'info' });
+        showToast({ title: t('exams.examDeleted'), message: t('exams.examDeletedMsg', { name: exam.name }), type: 'info' });
         renderExamManager(container);
       }
     });
@@ -133,9 +134,9 @@ function bindExamManagerEvents(container) {
   container.querySelectorAll('.delete-topic-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const topic = store.getTopic(btn.dataset.topicId);
-      if (topic && confirm(`Delete topic "${topic.name}"?`)) {
+      if (topic && confirm(t('exams.confirmDeleteTopic', { name: topic.name }))) {
         store.deleteTopic(topic.id);
-        showToast({ title: 'Topic Deleted', message: `${topic.name} has been removed.`, type: 'info' });
+        showToast({ title: t('exams.topicDeleted'), message: t('exams.topicDeletedMsg', { name: topic.name }), type: 'info' });
         renderExamManager(container);
       }
     });
@@ -148,23 +149,23 @@ function showExamForm(existingExam = null) {
   defaultDate.setDate(defaultDate.getDate() + 14);
 
   const overlay = showModal({
-    title: isEdit ? 'Edit Exam' : 'Add New Exam',
+    title: isEdit ? t('exams.editExam') : t('exams.addNewExam'),
     content: `
       <div class="form-group">
-        <label class="form-label">Exam Name</label>
+        <label class="form-label">${t('exams.examName')}</label>
         <input type="text" class="form-input" id="exam-name" 
           value="${isEdit ? existingExam.name : ''}" 
-          placeholder="e.g., Calculus II Final">
+          placeholder="${t('exams.examNamePlaceholder')}">
       </div>
       <div class="form-group">
-        <label class="form-label">Exam Date</label>
+        <label class="form-label">${t('exams.examDate')}</label>
         <input type="date" class="form-input" id="exam-date" 
           value="${isEdit ? existingExam.date : defaultDate.toISOString().split('T')[0]}">
       </div>
     `,
     footer: `
-      <button class="btn btn-secondary" id="modal-cancel">Cancel</button>
-      <button class="btn btn-primary" id="modal-save">${isEdit ? 'Update' : 'Add Exam'}</button>
+      <button class="btn btn-secondary" id="modal-cancel">${t('exams.cancel')}</button>
+      <button class="btn btn-primary" id="modal-save">${isEdit ? t('exams.update') : t('exams.add')}</button>
     `,
   });
 
@@ -174,21 +175,21 @@ function showExamForm(existingExam = null) {
     const date = overlay.querySelector('#exam-date').value;
 
     if (!name) {
-      showToast({ title: 'Validation Error', message: 'Please enter an exam name.', type: 'error' });
+      showToast({ title: t('exams.validationName'), message: t('exams.enterExamName'), type: 'error' });
       return;
     }
     if (!date) {
-      showToast({ title: 'Validation Error', message: 'Please select an exam date.', type: 'error' });
+      showToast({ title: t('exams.validationName'), message: t('exams.selectDate'), type: 'error' });
       return;
     }
 
     if (isEdit) {
       store.updateExam(existingExam.id, { name, date });
-      showToast({ title: 'Exam Updated', message: `${name} has been updated.`, type: 'success' });
+      showToast({ title: t('exams.examUpdated'), message: t('exams.examUpdatedMsg', { name }), type: 'success' });
     } else {
       const exam = createExam({ name, date });
       store.addExam(exam);
-      showToast({ title: 'Exam Added!', message: `${name} added. Now add topics.`, type: 'success' });
+      showToast({ title: t('exams.examAdded'), message: t('exams.examAddedMsg', { name }), type: 'success' });
     }
 
     closeModal();
@@ -201,21 +202,21 @@ function showTopicForm(examId, existingTopic = null) {
   const isEdit = !!existingTopic;
 
   const overlay = showModal({
-    title: isEdit ? 'Edit Topic' : 'Add Topic',
+    title: isEdit ? t('exams.editTopic') : t('exams.addTopicTitle'),
     content: `
       <div class="form-group">
-        <label class="form-label">Topic Name</label>
+        <label class="form-label">${t('exams.topicName')}</label>
         <input type="text" class="form-input" id="topic-name" 
           value="${isEdit ? existingTopic.name : ''}"
-          placeholder="e.g., Integration by Parts">
+          placeholder="${t('exams.topicNamePlaceholder')}">
       </div>
       <div class="form-group">
-        <label class="form-label">Weight (Importance in Exam) — ${isEdit ? existingTopic.weight : 5}/10</label>
+        <label class="form-label">${t('exams.topicWeight')} — ${isEdit ? existingTopic.weight : 5}/10</label>
         <input type="range" class="form-slider" id="topic-weight" 
           min="1" max="10" value="${isEdit ? existingTopic.weight : 5}">
       </div>
       <div class="form-group">
-        <label class="form-label">Self Assessment — How well do you know this?</label>
+        <label class="form-label">${t('exams.selfAssessment')}</label>
         <div style="display: flex; gap: var(--space-sm); margin-top: var(--space-xs);">
           ${[1,2,3,4,5].map(i => `
             <label style="cursor: pointer; font-size: 28px; color: ${i <= (isEdit ? existingTopic.selfAssessment : 3) ? '#fbbf24' : '#3a3a5c'}; transition: color 0.15s;" 
@@ -225,14 +226,14 @@ function showTopicForm(examId, existingTopic = null) {
         <input type="hidden" id="topic-self-assessment" value="${isEdit ? existingTopic.selfAssessment : 3}">
       </div>
       <div class="form-group">
-        <label class="form-label">Estimated Study Time (minutes)</label>
+        <label class="form-label">${t('exams.estimatedTime')}</label>
         <input type="number" class="form-input" id="topic-time" 
           value="${isEdit ? existingTopic.estimatedMinutes : 60}" min="30" step="15">
       </div>
     `,
     footer: `
-      <button class="btn btn-secondary" id="modal-cancel">Cancel</button>
-      <button class="btn btn-primary" id="modal-save">${isEdit ? 'Update' : 'Add Topic'}</button>
+      <button class="btn btn-secondary" id="modal-cancel">${t('exams.cancel')}</button>
+      <button class="btn btn-primary" id="modal-save">${isEdit ? t('exams.updateTopic') : t('exams.addTopicBtn')}</button>
     `,
   });
 
@@ -240,7 +241,7 @@ function showTopicForm(examId, existingTopic = null) {
   const weightSlider = overlay.querySelector('#topic-weight');
   weightSlider.addEventListener('input', () => {
     const label = weightSlider.parentElement.querySelector('.form-label');
-    label.textContent = `Weight (Importance in Exam) — ${weightSlider.value}/10`;
+    label.textContent = `${t('exams.topicWeight')} — ${weightSlider.value}/10`;
   });
 
   // Star rating interactivity
@@ -264,17 +265,17 @@ function showTopicForm(examId, existingTopic = null) {
     const estimatedMinutes = parseInt(overlay.querySelector('#topic-time').value);
 
     if (!name) {
-      showToast({ title: 'Validation Error', message: 'Please enter a topic name.', type: 'error' });
+      showToast({ title: t('exams.validationName'), message: t('exams.enterTopicName'), type: 'error' });
       return;
     }
 
     if (isEdit) {
       store.updateTopic(existingTopic.id, { name, weight, selfAssessment, estimatedMinutes });
-      showToast({ title: 'Topic Updated', message: `${name} has been updated.`, type: 'success' });
+      showToast({ title: t('exams.topicUpdated'), message: t('exams.topicUpdatedMsg', { name }), type: 'success' });
     } else {
       const topic = createTopic({ examId, name, weight, selfAssessment, estimatedMinutes });
       store.addTopic(topic);
-      showToast({ title: 'Topic Added!', message: `${name} added to the exam.`, type: 'success' });
+      showToast({ title: t('exams.topicAdded'), message: t('exams.topicAddedMsg', { name }), type: 'success' });
     }
 
     closeModal();
@@ -288,38 +289,38 @@ function showMockResultForm() {
   const exams = store.getExams();
 
   if (topics.length === 0) {
-    showToast({ title: 'No Topics', message: 'Add exams and topics first.', type: 'warning' });
+    showToast({ title: t('exams.noTopicsForMock'), message: t('exams.noTopicsForMockDesc'), type: 'warning' });
     return;
   }
 
   const overlay = showModal({
-    title: 'Add Mock Test Result',
+    title: t('exams.mockTitle'),
     content: `
       <div class="form-group">
-        <label class="form-label">Topic</label>
+        <label class="form-label">${t('exams.mockTopic')}</label>
         <select class="form-select" id="mock-topic">
-          ${topics.map(t => {
-            const exam = exams.find(e => e.id === t.examId);
-            return `<option value="${t.id}">${exam ? exam.name + ' — ' : ''}${t.name}</option>`;
+          ${topics.map(tp => {
+            const exam = exams.find(e => e.id === tp.examId);
+            return `<option value="${tp.id}">${exam ? exam.name + ' — ' : ''}${tp.name}</option>`;
           }).join('')}
         </select>
       </div>
       <div class="form-group">
-        <label class="form-label">Score</label>
+        <label class="form-label">${t('exams.mockScore')}</label>
         <input type="number" class="form-input" id="mock-score" min="0" max="100" value="50">
       </div>
       <div class="form-group">
-        <label class="form-label">Max Score</label>
+        <label class="form-label">${t('exams.mockMaxScore')}</label>
         <input type="number" class="form-input" id="mock-max" min="1" max="100" value="100">
       </div>
       <div class="form-group">
-        <label class="form-label">Date</label>
+        <label class="form-label">${t('exams.mockDate')}</label>
         <input type="date" class="form-input" id="mock-date" value="${new Date().toISOString().split('T')[0]}">
       </div>
     `,
     footer: `
-      <button class="btn btn-secondary" id="modal-cancel">Cancel</button>
-      <button class="btn btn-primary" id="modal-save">Save Result</button>
+      <button class="btn btn-secondary" id="modal-cancel">${t('exams.cancel')}</button>
+      <button class="btn btn-primary" id="modal-save">${t('exams.saveResult')}</button>
     `,
   });
 
@@ -331,13 +332,13 @@ function showMockResultForm() {
     const date = overlay.querySelector('#mock-date').value;
 
     if (isNaN(score) || score < 0) {
-      showToast({ title: 'Invalid Score', message: 'Please enter a valid score.', type: 'error' });
+      showToast({ title: t('exams.invalidScore'), message: t('exams.enterValidScore'), type: 'error' });
       return;
     }
 
     const result = createMockResult({ topicId, score, maxScore, date });
     store.addMockResult(result);
-    showToast({ title: 'Result Saved!', message: 'Mock test result has been recorded.', type: 'success' });
+    showToast({ title: t('exams.resultSaved'), message: t('exams.resultSavedMsg'), type: 'success' });
     closeModal();
     const c = document.getElementById('main-content');
     if (c) renderExamManager(c);

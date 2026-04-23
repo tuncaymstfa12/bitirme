@@ -4,6 +4,7 @@
  */
 
 import { store } from '../data/store.js';
+import { t } from '../data/i18n.js';
 import { rankTopics, getPriorityLabel, getPriorityClass } from '../engine/priorityCalculator.js';
 import { generateInsights } from '../engine/performanceAnalyzer.js';
 import { getScheduleStats } from '../engine/scheduler.js';
@@ -33,45 +34,45 @@ export function renderDashboard(container) {
 
   container.innerHTML = `
     <div class="page-header">
-      <h2>📊 Dashboard</h2>
-      <p>Your study plan overview and priority analysis</p>
+      <h2>📊 ${t('dashboard.title')}</h2>
+      <p>${t('dashboard.subtitle')}</p>
     </div>
 
     <!-- Stats -->
-    <div class="stats-grid">
-      <div class="stat-card accent">
+    <div class="stats-grid animate-fade-in-up">
+      <div class="stat-card accent" style="animation-delay: 0.1s">
         <div class="stat-icon">📚</div>
         <div class="stat-value">${exams.length}</div>
-        <div class="stat-label">Active Exams</div>
+        <div class="stat-label">${t('dashboard.activeExams')}</div>
       </div>
-      <div class="stat-card info">
+      <div class="stat-card info" style="animation-delay: 0.2s">
         <div class="stat-icon">📖</div>
         <div class="stat-value">${topics.length}</div>
-        <div class="stat-label">Topics to Study</div>
+        <div class="stat-label">${t('dashboard.topicsToStudy')}</div>
       </div>
-      <div class="stat-card success">
+      <div class="stat-card success" style="animation-delay: 0.3s">
         <div class="stat-icon">✓</div>
         <div class="stat-value">${stats.completedSessions}</div>
-        <div class="stat-label">Completed Sessions</div>
+        <div class="stat-label">${t('dashboard.completedSessions')}</div>
       </div>
-      <div class="stat-card ${stats.missedSessions > 0 ? 'danger' : 'warning'}">
+      <div class="stat-card ${stats.missedSessions > 0 ? 'danger' : 'warning'}" style="animation-delay: 0.4s">
         <div class="stat-icon">${stats.missedSessions > 0 ? '⚠' : '📅'}</div>
         <div class="stat-value">${stats.missedSessions > 0 ? stats.missedSessions : stats.scheduledSessions}</div>
-        <div class="stat-label">${stats.missedSessions > 0 ? 'Missed Sessions' : 'Scheduled Sessions'}</div>
+        <div class="stat-label">${stats.missedSessions > 0 ? t('dashboard.missedSessions') : t('dashboard.scheduledSessions')}</div>
       </div>
     </div>
 
     <div class="grid-2">
       <!-- Left Column -->
-      <div>
+      <div class="animate-fade-in-up" style="animation-delay: 0.2s">
         <!-- Today's Schedule -->
         <div class="section">
-          <h3 class="section-title">📅 Today's Schedule</h3>
+          <h3 class="section-title">📅 ${t('dashboard.todaySchedule')}</h3>
           <div class="card">
             ${todaySessions.length === 0 
               ? `<div class="empty-state">
                   <div class="empty-icon">📭</div>
-                  <p>No sessions scheduled for today. Generate a study plan to get started!</p>
+                  <p>${t('dashboard.noSessionsToday')}</p>
                 </div>`
               : todaySessions.map(session => {
                   const topic = store.getTopic(session.topicId);
@@ -80,11 +81,11 @@ export function renderDashboard(container) {
                     <div class="schedule-slot ${session.status}" data-session-id="${session.id}">
                       <span class="schedule-time">${formatTime(session.startHour, session.startMinute)}</span>
                       ${exam ? `<span class="schedule-exam-dot" style="background: ${exam.color}"></span>` : ''}
-                      <span class="schedule-topic">${topic ? topic.name : 'Unknown'}</span>
+                      <span class="schedule-topic">${topic ? topic.name : t('generic.unknown')}</span>
                       <div class="schedule-actions">
                         ${session.status === 'scheduled' ? `
-                          <button class="btn btn-sm btn-success session-complete-btn" data-id="${session.id}" title="Mark Complete">✓</button>
-                          <button class="btn btn-sm btn-danger session-miss-btn" data-id="${session.id}" title="Mark Missed">✕</button>
+                          <button class="btn btn-sm btn-success session-complete-btn" data-id="${session.id}" title="${t('dashboard.complete')}">✓</button>
+                          <button class="btn btn-sm btn-danger session-miss-btn" data-id="${session.id}" title="${t('dashboard.sessionMissed')}">✕</button>
                         ` : `<span class="tag">${session.status}</span>`}
                       </div>
                     </div>
@@ -97,7 +98,7 @@ export function renderDashboard(container) {
         <!-- Insights -->
         ${insights.length > 0 ? `
         <div class="section">
-          <h3 class="section-title">💡 Insights & Recommendations</h3>
+          <h3 class="section-title">💡 ${t('dashboard.insights')}</h3>
           ${insights.map(insight => `
             <div class="insight-card ${insight.type}">
               <span class="insight-icon">${insight.icon}</span>
@@ -112,12 +113,12 @@ export function renderDashboard(container) {
       </div>
 
       <!-- Right Column -->
-      <div>
+      <div class="animate-fade-in-up" style="animation-delay: 0.3s">
         <!-- Upcoming Exams -->
         <div class="section">
-          <h3 class="section-title">🎯 Upcoming Exams</h3>
+          <h3 class="section-title">🎯 ${t('dashboard.upcomingExams')}</h3>
           ${upcomingExams.length === 0 
-            ? '<div class="card"><div class="empty-state"><p>No upcoming exams. Add exams in the Exam Manager.</p></div></div>'
+            ? `<div class="card"><div class="empty-state"><p>${t('dashboard.noUpcomingExams')}</p></div></div>`
             : upcomingExams.map(exam => {
                 const days = daysUntil(exam.date);
                 const examTopics = topics.filter(t => t.examId === exam.id);
@@ -128,14 +129,14 @@ export function renderDashboard(container) {
                       <div style="flex: 1;">
                         <div style="font-weight: 700;">${exam.name}</div>
                         <div style="font-size: var(--font-xs); color: var(--text-tertiary);">
-                          ${formatDate(exam.date)} · ${examTopics.length} topics
+                          ${formatDate(exam.date)} · ${examTopics.length} ${t('dashboard.topics')}
                         </div>
                       </div>
                       <div style="text-align: right;">
                         <div style="font-size: var(--font-xl); font-weight: 800; color: ${days <= 3 ? 'var(--color-danger)' : days <= 7 ? 'var(--color-warning)' : 'var(--text-accent)'};">
                           ${days}
                         </div>
-                        <div style="font-size: var(--font-xs); color: var(--text-tertiary);">days left</div>
+                        <div style="font-size: var(--font-xs); color: var(--text-tertiary);">${t('dashboard.daysLeft')}</div>
                       </div>
                     </div>
                   </div>
@@ -146,9 +147,9 @@ export function renderDashboard(container) {
 
         <!-- Priority Rankings -->
         <div class="section">
-          <h3 class="section-title">🔥 Priority Rankings</h3>
+          <h3 class="section-title">🔥 ${t('dashboard.priorityRankings')}</h3>
           ${ranked.length === 0 
-            ? '<div class="card"><div class="empty-state"><p>Add exams and topics to see priority rankings.</p></div></div>'
+            ? `<div class="card"><div class="empty-state"><p>${t('dashboard.noPriorityData')}</p></div></div>`
             : ranked.slice(0, 8).map((r, i) => `
                 <div class="priority-bar">
                   <div style="min-width: 24px; font-size: var(--font-xs); color: var(--text-tertiary); font-weight: 700;">#${i + 1}</div>
@@ -170,7 +171,7 @@ export function renderDashboard(container) {
         <!-- Completion Donut -->
         ${stats.totalSessions > 0 ? `
         <div class="section">
-          <h3 class="section-title">📈 Completion Rate</h3>
+          <h3 class="section-title">📈 ${t('dashboard.completionRate')}</h3>
           <div class="card">
             <div class="chart-container" style="max-width: 220px; margin: 0 auto;">
               <canvas id="completionDonut" width="220" height="220"></canvas>
@@ -195,7 +196,7 @@ export function renderDashboard(container) {
         { value: stats.completedSessions, color: '#22c55e' },
         { value: stats.missedSessions, color: '#ef4444' },
         { value: stats.scheduledSessions, color: '#6366f1' },
-      ], { centerText: `${completionPct}%`, centerSubtext: 'Complete' });
+      ], { centerText: `${completionPct}%`, centerSubtext: t('dashboard.complete') });
     }
   }
 }
@@ -219,7 +220,7 @@ function bindDashboardEvents(container) {
         }
       }
       
-      showToast({ title: 'Session Completed!', message: 'Great work! Keep it up! 🎉', type: 'success' });
+      showToast({ title: t('dashboard.sessionCompleted'), message: t('dashboard.sessionCompletedMsg'), type: 'success' });
       // Re-render
       renderDashboard(container);
     });
@@ -231,7 +232,7 @@ function bindDashboardEvents(container) {
       e.stopPropagation();
       const id = btn.dataset.id;
       store.updateSession(id, { status: 'missed' });
-      showToast({ title: 'Session Missed', message: 'The session will be rescheduled.', type: 'warning' });
+      showToast({ title: t('dashboard.sessionMissed'), message: t('dashboard.sessionMissedMsg'), type: 'warning' });
       renderDashboard(container);
     });
   });

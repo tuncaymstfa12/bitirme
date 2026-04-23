@@ -231,3 +231,43 @@ export function getMasteryRadarData(topics, mockResults) {
     };
   });
 }
+
+/**
+ * Get daily consistency data for Heatmap (last 90 days)
+ */
+export function getConsistencyData(sessions, days = 90) {
+  const data = [];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  // Initialize days
+  const dayMap = {};
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const dateStr = d.toISOString().split('T')[0];
+    dayMap[dateStr] = 0;
+  }
+
+  // Count completed sessions
+  const completed = sessions.filter(s => s.status === 'completed' && s.date);
+  completed.forEach(s => {
+    if (dayMap[s.date] !== undefined) {
+      dayMap[s.date]++;
+    }
+  });
+
+  // Calculate levels (0 to 4)
+  for (const date in dayMap) {
+    const count = dayMap[date];
+    let level = 0;
+    if (count === 1) level = 1;
+    else if (count === 2) level = 2;
+    else if (count >= 3 && count <= 4) level = 3;
+    else if (count > 4) level = 4;
+    
+    data.push({ date, count, level });
+  }
+
+  return data;
+}
