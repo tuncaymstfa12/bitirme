@@ -1,12 +1,10 @@
-const API_BASE_URL = 'http://localhost:3001/api/auth';
+const API_BASE_URL = '/api/auth';
 const TOKEN_STORAGE_KEY = 'studyPlanner_authToken';
 
 export async function registerUserApi(payload) {
-  const response = await fetch(`${API_BASE_URL}/register`, {
+  const response = await fetch(API_BASE_URL + '/register', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
 
@@ -18,11 +16,9 @@ export async function registerUserApi(payload) {
 }
 
 export async function loginUserApi(email, password) {
-  const response = await fetch(`${API_BASE_URL}/login`, {
+  const response = await fetch(API_BASE_URL + '/login', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   });
 
@@ -37,10 +33,8 @@ export async function fetchCurrentUserApi() {
   const token = getStoredToken();
   if (!token) return null;
 
-  const response = await fetch(`${API_BASE_URL}/me`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+  const response = await fetch(API_BASE_URL + '/me', {
+    headers: { Authorization: 'Bearer ' + token },
   });
 
   if (response.status === 401) {
@@ -57,11 +51,9 @@ export async function logoutUserApi() {
   const token = getStoredToken();
   if (!token) return;
 
-  const response = await fetch(`${API_BASE_URL}/logout`, {
+  const response = await fetch(API_BASE_URL + '/logout', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+    headers: { Authorization: 'Bearer ' + token },
   });
 
   clearStoredToken();

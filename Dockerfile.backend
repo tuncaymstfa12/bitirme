@@ -1,0 +1,14 @@
+FROM node:22-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm install --production
+
+COPY server/ ./server/
+
+ENV AUTH_API_PORT=8000
+
+EXPOSE 8000
+
+CMD ["node", "server/server.js"]

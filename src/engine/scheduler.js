@@ -72,8 +72,9 @@ export function generateAvailableSlots(availability, constraints, startDate, end
 function allocateSlots(rankedTopics, slots, constraints) {
   const sessions = [];
   const slotsByDate = groupSlotsByDate(slots);
-  const dailyCounts = {}; // date → { total, byExamId }
+  const dailyCounts = {}; // date → { total, byExamId, topicIds }
   const lastTopicDate = {}; // topicId → last assigned date
+  const minSubjects = constraints.minDailySubjects || 2;
 
   // Calculate how many slots each topic needs
   const topicSlotNeeds = rankedTopics.map(rt => {
@@ -108,7 +109,7 @@ function allocateSlots(rankedTopics, slots, constraints) {
         if (need.slotsAllocated >= need.slotsNeeded) break;
 
         // Initialize daily tracking
-        if (!dailyCounts[date]) dailyCounts[date] = { total: 0, byExamId: {} };
+        if (!dailyCounts[date]) dailyCounts[date] = { total: 0, byExamId: {}, topicIds: new Set() };
 
         // Check daily max
         if (dailyCounts[date].total >= constraints.maxDailySlotsCount) continue;
@@ -123,8 +124,13 @@ function allocateSlots(rankedTopics, slots, constraints) {
           const lastDate = new Date(lastTopicDate[need.topic.id]);
           const currentDate = new Date(date);
           const dayDiff = (currentDate - lastDate) / (1000 * 60 * 60 * 24);
-          // Allow same day, but enforce gap across different days
           if (dayDiff > 0 && dayDiff < constraints.spacedRepetitionGapDays) continue;
+        }
+
+        // Enforce minDailySubjects: if the day has 4+ slots but too few unique subjects,
+        // skip topics already covered today to force variety
+        if (dailyCounts[date].total >= 4 && dailyCounts[date].topicIds.size < minSubjects) {
+          if (dailyCounts[date].topicIds.has(need.topic.id)) continue;
         }
 
         // Find an available slot
@@ -147,6 +153,7 @@ function allocateSlots(rankedTopics, slots, constraints) {
         need.slotsAllocated++;
         dailyCounts[date].total++;
         dailyCounts[date].byExamId[need.exam.id] = (dailyCounts[date].byExamId[need.exam.id] || 0) + 1;
+        dailyCounts[date].topicIds.add(need.topic.id);
         lastTopicDate[need.topic.id] = date;
       }
     }

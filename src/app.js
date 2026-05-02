@@ -13,6 +13,7 @@ import { renderDashboard } from './ui/dashboard.js';
 import { renderExamManager } from './ui/examManager.js';
 import { renderScheduleView } from './ui/scheduleView.js';
 import { renderAnalytics } from './ui/analytics.js';
+import { renderProfile } from './ui/profileView.js';
 import { renderSettings } from './ui/settings.js';
 import { startNotificationEngine, stopNotificationEngine } from './engine/notifications.js';
 import { showToast } from './ui/components.js';
@@ -25,6 +26,7 @@ const routes = {
   exams: { labelKey: 'nav.exams', icon: '🎓', render: renderExamManager },
   schedule: { labelKey: 'nav.schedule', icon: '🗓', render: renderScheduleView },
   analytics: { labelKey: 'nav.analytics', icon: '📈', render: renderAnalytics },
+  profile: { labelKey: 'nav.profile', icon: '👤', render: renderProfile },
   settings: { labelKey: 'nav.settings', icon: '⚙️', render: renderSettings },
 };
 
@@ -54,6 +56,20 @@ async function bootstrapSession() {
     authBootError = 'Auth API is not reachable. Start it with `npm run api`.';
   }
 
+  renderCurrentShell();
+}
+
+async function onUserAuthenticated(user) {
+  currentUser = user;
+  authBootError = '';
+  showToast({
+    title: t('auth.signedIn'),
+    message: t('auth.welcomeMsg', { name: user.name }),
+    type: 'success',
+  });
+
+  // Sync data from PostgreSQL API
+try {    const synced = await store.syncFromServer();    if (!synced) {      showToast({ title: "Bağlantı hatası", message: "Sunucuya bağlanılamadı. Yerel veriler kullanılacak.", type: "warning" });    }  } catch (e) {    showToast({ title: "Senkronizasyon hatası", message: e.message, type: "error" });  }
   renderCurrentShell();
 }
 
@@ -87,14 +103,7 @@ function renderAuthShell() {
   renderAuthView(document.getElementById('auth-shell'), {
     initialError: authBootError,
     onAuthenticated(user) {
-      currentUser = user;
-      authBootError = '';
-      showToast({
-        title: t('auth.signedIn'),
-        message: t('auth.welcomeMsg', { name: user.name }),
-        type: 'success',
-      });
-      renderCurrentShell();
+      onUserAuthenticated(user);
     },
   });
 }

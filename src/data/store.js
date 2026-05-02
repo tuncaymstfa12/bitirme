@@ -1,9 +1,19 @@
 /**
  * Reactive State Store with LocalStorage persistence
- * Central data management for the Study Planning System
+ * Central data management for the Study Planning System.
+ * Syncs with PostgreSQL API when available.
  */
 
+import {
+  syncAll, createExam as apiCreateExam, updateExam as apiUpdateExam, deleteExam as apiDeleteExam,
+  createTopic as apiCreateTopic, updateTopic as apiUpdateTopic, deleteTopic as apiDeleteTopic,
+  createSession as apiCreateSession, deleteSession as apiDeleteSession, setSessions as apiSetSessions, updateSession as apiUpdateSession, clearSessions as apiClearSessions,
+  createMockResult as apiCreateMockResult, deleteMockResult as apiDeleteMockResult,
+  updateSettings as apiUpdateSettings,
+} from '../api/dataApi.js';
+
 const STORAGE_KEY = 'studyPlannerState';
+let apiOnline = false;
 
 const defaultState = {
   exams: [],
@@ -27,8 +37,6 @@ const defaultState = {
       slotDurationMinutes: 30,
     },
     dailyAvailability: {
-      // default: 8am-12pm, 2pm-6pm (weekdays) 
-      // keys: 0=Sun, 1=Mon, ... 6=Sat
       0: [{ start: 10, end: 14 }],
       1: [{ start: 8, end: 12 }, { start: 14, end: 18 }],
       2: [{ start: 8, end: 12 }, { start: 14, end: 18 }],
@@ -67,15 +75,59 @@ function saveState() {
 function emit(event, data) {
   const handlers = listeners.get(event) || [];
   handlers.forEach(fn => fn(data));
-  // Always emit a generic change event
   const globalHandlers = listeners.get('change') || [];
   globalHandlers.forEach(fn => fn({ event, data }));
+}
+
+function syncToServer(key, action) {
+  if (!apiOnline) return;
+  action().catch(err => {
+    console.warn(`API sync failed for ${key}:`, err.message);
+  });
 }
 
 // --- Public API ---
 
 export const store = {
-  // Subscribe to events
+  isApiOnline() { return apiOnline; },
+
+  async syncFromServer() {
+    try {
+      const data = await syncAll();
+      apiOnline = true;
+
+      // Merge server data into local state (server is source of truth)
+      state.exams = data.exams || [];
+      state.topics = data.topics || [];
+      state.sessions = data.sessions || [];
+      state.mockResults = data.mockResults || [];
+      if (data.settings) {
+        state.settings = deepMerge(state.settings, data.settings);
+      }
+
+      saveState();
+      emit('change', { event: 'sync' });
+      return true;
+    } catch (e) {
+      apiOnline = false;
+      console.warn('API sync failed, using localStorage:', e.message);
+      return false;
+    }
+  },
+
+  async pushToServer() {
+    if (!apiOnline) return false;
+    try {
+      await apiSetSessions(state.sessions);
+      // Settings are pushed separately on update
+      // Exams, topics, mock results are pushed individually on create/update/delete
+      return true;
+    } catch (e) {
+      console.warn('Push to server failed:', e.message);
+      return false;
+    }
+  },
+
   on(event, handler) {
     if (!listeners.has(event)) listeners.set(event, []);
     listeners.get(event).push(handler);
@@ -92,22 +144,24 @@ export const store = {
   addExam(exam) {
     state.exams.push(exam);
     saveState(); emit('exams:changed', exam);
+    syncToServer('exam', () => apiCreateExam(exam));
   },
   updateExam(id, updates) {
     const idx = state.exams.findIndex(e => e.id === id);
     if (idx >= 0) {
       state.exams[idx] = { ...state.exams[idx], ...updates };
       saveState(); emit('exams:changed', state.exams[idx]);
+      syncToServer('exam', () => apiUpdateExam(id, updates));
     }
   },
   deleteExam(id) {
     state.exams = state.exams.filter(e => e.id !== id);
-    // Cascade: remove topics, sessions, and mock results linked to this exam
     const topicIds = state.topics.filter(t => t.examId === id).map(t => t.id);
     state.topics = state.topics.filter(t => t.examId !== id);
     state.sessions = state.sessions.filter(s => !topicIds.includes(s.topicId));
     state.mockResults = state.mockResults.filter(m => !topicIds.includes(m.topicId));
     saveState(); emit('exams:changed');
+    syncToServer('exam', () => apiDeleteExam(id));
   },
 
   // --- Topics ---
@@ -119,12 +173,14 @@ export const store = {
   addTopic(topic) {
     state.topics.push(topic);
     saveState(); emit('topics:changed', topic);
+    syncToServer('topic', () => apiCreateTopic(topic));
   },
   updateTopic(id, updates) {
     const idx = state.topics.findIndex(t => t.id === id);
     if (idx >= 0) {
       state.topics[idx] = { ...state.topics[idx], ...updates };
       saveState(); emit('topics:changed', state.topics[idx]);
+      syncToServer('topic', () => apiUpdateTopic(id, updates));
     }
   },
   deleteTopic(id) {
@@ -132,6 +188,7 @@ export const store = {
     state.sessions = state.sessions.filter(s => s.topicId !== id);
     state.mockResults = state.mockResults.filter(m => m.topicId !== id);
     saveState(); emit('topics:changed');
+    syncToServer('topic', () => apiDeleteTopic(id));
   },
 
   // --- Sessions ---
@@ -146,25 +203,30 @@ export const store = {
   setSessions(sessions) {
     state.sessions = sessions;
     saveState(); emit('sessions:changed');
+    syncToServer('sessions', () => apiSetSessions(sessions));
   },
   addSession(session) {
     state.sessions.push(session);
     saveState(); emit('sessions:changed', session);
+    syncToServer('sessions', () => apiCreateSession(session));
   },
   updateSession(id, updates) {
     const idx = state.sessions.findIndex(s => s.id === id);
     if (idx >= 0) {
       state.sessions[idx] = { ...state.sessions[idx], ...updates };
       saveState(); emit('sessions:changed', state.sessions[idx]);
+      syncToServer('session', () => apiUpdateSession(id, updates));
     }
   },
   deleteSession(id) {
     state.sessions = state.sessions.filter(s => s.id !== id);
     saveState(); emit('sessions:changed');
+    syncToServer('sessions', () => apiDeleteSession(id));
   },
   clearSessions() {
     state.sessions = [];
     saveState(); emit('sessions:changed');
+    syncToServer('sessions', () => apiClearSessions());
   },
 
   // --- Mock Results ---
@@ -175,10 +237,12 @@ export const store = {
   addMockResult(result) {
     state.mockResults.push(result);
     saveState(); emit('mockResults:changed', result);
+    syncToServer('mockResult', () => apiCreateMockResult(result));
   },
   deleteMockResult(id) {
     state.mockResults = state.mockResults.filter(m => m.id !== id);
     saveState(); emit('mockResults:changed');
+    syncToServer('mockResult', () => apiDeleteMockResult(id));
   },
 
   // --- Settings ---
@@ -186,6 +250,7 @@ export const store = {
   updateSettings(updates) {
     state.settings = deepMerge(state.settings, updates);
     saveState(); emit('settings:changed', state.settings);
+    syncToServer('settings', () => apiUpdateSettings(updates));
   },
 
   // --- Utility ---
