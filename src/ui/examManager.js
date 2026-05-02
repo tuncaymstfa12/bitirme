@@ -151,7 +151,7 @@ function showTopicForm(examId,existing){
 function showMockResultForm(){
   var exType='TYT', lang='İngilizce';
 
-  function build(){
+  function buildTable(){
     var str = exType==='TYT' ? EXAM_STRUCTURE.TYT : (EXAM_STRUCTURE.AYT[exType] || EXAM_STRUCTURE.AYT.sayisal);
     var rows='', langSel='';
     if(exType==='dil'){
@@ -169,16 +169,7 @@ function showMockResultForm(){
         '<td style="text-align:center;font-weight:700;" class="mock-net" data-idx="'+i+'">0.00</td>'+
         '<td style="text-align:center;font-size:var(--font-xs);" class="mock-pct" data-idx="'+i+'">%0</td></tr>';
     });
-
-    return '<div class="form-group"><label class="form-label">Deneme Türü</label><select class="form-select" id="mock-type">'+
-      '<option value="TYT"'+(exType==='TYT'?' selected':'')+'>TYT (120 soru)</option>'+
-      '<option value="sayisal"'+(exType==='sayisal'?' selected':'')+'>AYT Sayısal (80 soru)</option>'+
-      '<option value="esit_agirlik"'+(exType==='esit_agirlik'?' selected':'')+'>AYT EA (80 soru)</option>'+
-      '<option value="sozel"'+(exType==='sozel'?' selected':'')+'>AYT Sözel (80 soru)</option>'+
-      '<option value="dil"'+(exType==='dil'?' selected':'')+'>YDT Dil (80 soru)</option>'+
-      '</select></div>'+
-      langSel +
-      '<div class="form-group"><label class="form-label">Tarih</label><input type="date" class="form-input" id="mock-date" value="'+new Date().toISOString().split('T')[0]+'"></div>'+
+    return langSel +
       '<div style="overflow-x:auto;"><table class="data-table" style="width:100%;"><thead><tr><th>Ders</th><th>Soru</th><th>Doğru</th><th>Yanlış</th><th>Net</th><th>%</th></tr></thead><tbody id="mock-rows">'+rows+'</tbody></table></div>'+
       '<div style="margin-top:var(--space-md);text-align:right;font-weight:700;">Toplam Net: <span id="mock-total-net">0.00</span></div>'+
       '<small style="color:var(--text-tertiary);">* 4 yanlış 1 doğruyu götürür</small>';
@@ -186,7 +177,16 @@ function showMockResultForm(){
 
   var ov=showModal({
     title:'📝 Deneme Sınav Sonucu Ekle',
-    content:'<div id="mock-inner">'+build()+'</div>',
+    content:
+      '<div class="form-group"><label class="form-label">Deneme Türü</label><select class="form-select" id="mock-type">'+
+      '<option value="TYT"'+(exType==='TYT'?' selected':'')+'>TYT (120 soru)</option>'+
+      '<option value="sayisal"'+(exType==='sayisal'?' selected':'')+'>AYT Sayısal (80 soru)</option>'+
+      '<option value="esit_agirlik"'+(exType==='esit_agirlik'?' selected':'')+'>AYT EA (80 soru)</option>'+
+      '<option value="sozel"'+(exType==='sozel'?' selected':'')+'>AYT Sözel (80 soru)</option>'+
+      '<option value="dil"'+(exType==='dil'?' selected':'')+'>YDT Dil (80 soru)</option>'+
+      '</select></div>'+
+      '<div class="form-group"><label class="form-label">Tarih</label><input type="date" class="form-input" id="mock-date" value="'+new Date().toISOString().split('T')[0]+'"></div>'+
+      '<div id="mock-table">'+buildTable()+'</div>',
     footer:'<button class="btn btn-secondary" id="modal-cancel">'+t('exams.cancel')+'</button><button class="btn btn-primary" id="modal-save">Sonucu Kaydet</button>'
   });
 
@@ -201,8 +201,8 @@ function showMockResultForm(){
         var qs=str.lessons[idx].questions;
         var pct=qs>0?Math.round((net/qs)*100):0;
         var nc=ov.querySelector('.mock-net[data-idx="'+idx+'"]');
-        var pc=ov.querySelector('.mock-pct[data-idx="'+idx+'"]');
         if(nc)nc.textContent=net.toFixed(2);
+        var pc=ov.querySelector('.mock-pct[data-idx="'+idx+'"]');
         if(pc)pc.textContent='%'+pct;
         var totalNet=0; str.lessons.forEach(function(_,i){
           var ci=parseInt((ov.querySelector('.mock-correct[data-idx="'+i+'"]')||{}).value)||0;
@@ -215,11 +215,13 @@ function showMockResultForm(){
   }
   rebindCalc();
 
-  ov.querySelector('#mock-type').addEventListener('change',function(){
-    exType=this.value; var mi=ov.querySelector("#mock-inner"); mi.innerHTML=build(); rebindCalc(); var le=ov.querySelector("#mock-lang"); if(le) le.addEventListener("change",function(){lang=le.value; mi.innerHTML=build(); rebindCalc();});
+  // Event delegation — survives rebuilds
+  ov.addEventListener('change',function(e){
+    if(e.target.id==='mock-type'){ exType=e.target.value; ov.querySelector('#mock-table').innerHTML=buildTable(); rebindCalc(); }
+    if(e.target.id==='mock-lang'){ lang=e.target.value; ov.querySelector('#mock-table').innerHTML=buildTable(); rebindCalc(); }
   });
 
-  var langEl=ov.querySelector('#mock-lang');
+  ov.querySelector('#modal-cancel').addEventListener('click',closeModal);
   ov.querySelector('#modal-save').addEventListener('click',function(){
     var date=ov.querySelector('#mock-date').value;
     var str=exType==='TYT'?EXAM_STRUCTURE.TYT:(EXAM_STRUCTURE.AYT[exType]||EXAM_STRUCTURE.AYT.sayisal);
@@ -231,15 +233,11 @@ function showMockResultForm(){
       if(c===0&&w===0)return;
       var net=calcNet(c,w);
       var pct=l.questions>0?Math.round((net/l.questions)*100):0;
-      var lessonName = exType==='dil' ? lang : l.name;
       totalNet+=net; totalQ+=l.questions;
-      rows.push({lesson:lessonName,correct:c,wrong:w,net:net,total:l.questions,pct:pct});
+      rows.push({lesson:exType==='dil'?lang:l.name,correct:c,wrong:w,net:net,total:l.questions,pct:pct});
       saved++;
     });
-    var overallNet = calcNet(
-      rows.reduce(function(s,r){return s+r.correct;},0),
-      rows.reduce(function(s,r){return s+r.wrong;},0)
-    );
+    var overallNet = calcNet(rows.reduce(function(s,r){return s+r.correct;},0),rows.reduce(function(s,r){return s+r.wrong;},0));
     var overallPct = totalQ>0 ? Math.round((overallNet/totalQ)*100) : 0;
     showToast({title:'Deneme Kaydedildi',message:saved+' ders · Net: '+totalNet.toFixed(2)+'/'+totalQ+' (%'+overallPct+') — '+getNetLabel(overallPct),type:'success'});
     closeModal(); var c=document.getElementById('main-content'); if(c)renderExamManager(c);
