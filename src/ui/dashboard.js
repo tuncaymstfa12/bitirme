@@ -8,7 +8,7 @@ import { t } from '../data/i18n.js';
 import { rankTopics, getPriorityLabel, getPriorityClass } from '../engine/priorityCalculator.js';
 import { generateInsights } from '../engine/performanceAnalyzer.js';
 import { getScheduleStats } from '../engine/scheduler.js';
-import { formatDate, formatTime, daysUntil, showToast, drawDonutChart } from './components.js';
+import { formatDate, formatTime, daysUntil, showToast, drawDonutChart, formatLocalDate } from './components.js';
 
 export function renderDashboard(container) {
   const exams = store.getExams();
@@ -21,7 +21,7 @@ export function renderDashboard(container) {
   const stats = getScheduleStats(sessions, topics, exams);
   const insights = generateInsights(exams, topics, mockResults, sessions);
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = formatLocalDate(new Date());
   const todaySessions = sessions.filter(s => s.date === todayStr && s.status !== 'break');
 
   // Upcoming exams (next 30 days)

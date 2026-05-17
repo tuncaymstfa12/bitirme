@@ -41,7 +41,6 @@ export function renderSettings(container) {
             ).join('')}
           </select>
         </div>
-        </div>
         <div class="form-group" style="margin-bottom: 0; flex: 1; min-width: 200px;">
           <label class="form-label">${t('settings.notifications')}</label>
           <div style="display: flex; gap: var(--space-sm); align-items: center;">
@@ -282,7 +281,7 @@ export function loadDemoData() {
   store.resetAll();
 
   const today = new Date();
-  const d = (offset) => { const x = new Date(today); x.setDate(x.getDate() + offset); return x.toISOString().split('T')[0]; };
+  const d = (offset) => { const x = new Date(today); x.setDate(x.getDate() + offset); return String(x.getFullYear()) + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0'); };
 
   const e1 = createExam({ name: 'Kalkülüs II', date: d(7), color: '#6366f1' });
   const e2 = createExam({ name: 'Veri Yapıları', date: d(12), color: '#ec4899' });

@@ -10,7 +10,9 @@ import { t } from './data/i18n.js';
 import { applyTheme } from './data/theme.js';
 import { fetchCurrentUserApi, logoutUserApi } from './api/authApi.js';
 import { renderDashboard } from './ui/dashboard.js';
+import { renderAdminImport } from './ui/adminImport.js';
 import { renderExamManager } from './ui/examManager.js';
+import { renderQuestionBank } from './ui/questionBank.js';
 import { renderScheduleView } from './ui/scheduleView.js';
 import { renderAnalytics } from './ui/analytics.js';
 import { renderProfile } from './ui/profileView.js';
@@ -24,6 +26,8 @@ window.__models = { createExam, createTopic, createMockResult };
 const routes = {
   dashboard: { labelKey: 'nav.dashboard', icon: '📊', render: renderDashboard },
   exams: { labelKey: 'nav.exams', icon: '🎓', render: renderExamManager },
+  questions: { labelKey: 'nav.questions', icon: '?', render: renderQuestionBank },
+  'admin-import': { labelKey: 'nav.adminImport', icon: 'AI', render: renderAdminImport, hidden: true },
   schedule: { labelKey: 'nav.schedule', icon: '🗓', render: renderScheduleView },
   analytics: { labelKey: 'nav.analytics', icon: '📈', render: renderAnalytics },
   profile: { labelKey: 'nav.profile', icon: '👤', render: renderProfile },
@@ -40,6 +44,9 @@ async function init() {
   store.on('change', () => {
     if (!currentUser) return;
     if (document.querySelector('.modal-overlay.active')) return;
+    const main = document.getElementById('main-content');
+    if (!main) return;
+    navigateTo(currentRoute);
   });
 
   await bootstrapSession();
@@ -151,7 +158,7 @@ function renderNav() {
   const exams = store.getExams();
   const missedCount = store.getSessions({ status: 'missed' }).length;
 
-  nav.innerHTML = Object.entries(routes).map(([key, route]) => {
+  nav.innerHTML = Object.entries(routes).filter(([, route]) => !route.hidden).map(([key, route]) => {
     let badge = '';
 
     if (key === 'exams' && exams.length > 0) {

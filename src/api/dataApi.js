@@ -13,7 +13,12 @@ async function request(method, path, body = null) {
   if (body) opts.body = JSON.stringify(body);
 
   const res = await fetch(API_BASE + path, opts);
-  const data = await res.json();
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error('Sunucu yanıt vermiyor.');
+  }
 
   if (!res.ok) throw new Error(data.error || 'API request failed');
   return data;
@@ -91,6 +96,43 @@ export async function createMockResult(result) {
 
 export async function deleteMockResult(id) {
   return request('DELETE', '/mock-results/' + id);
+}
+
+export async function getQuestions(filters = {}) {
+  const params = new URLSearchParams();
+  if (filters.examType) params.set('examType', filters.examType);
+  if (filters.lesson) params.set('lesson', filters.lesson);
+  if (filters.topicName) params.set('topicName', filters.topicName);
+  const qs = params.toString() ? '?' + params.toString() : '';
+  return request('GET', '/questions' + qs);
+}
+
+export async function createQuestion(question) {
+  return request('POST', '/questions', question);
+}
+
+export async function updateQuestion(id, updates) {
+  return request('PUT', '/questions/' + id, updates);
+}
+
+export async function deleteQuestion(id) {
+  return request('DELETE', '/questions/' + id);
+}
+
+export async function answerQuestion(questionId, selectedOption) {
+  return request('POST', '/questions/' + questionId + '/answer', { selectedOption });
+}
+
+export async function extractQuestionsWithOcr({ fileName, fileBase64, lang = 'tur+eng' }) {
+  return request('POST', '/ocr/questions', { fileName, fileBase64, lang });
+}
+
+export async function getAdminQuestionImports() {
+  return request('GET', '/admin/question-imports');
+}
+
+export async function importAdminQuestionPdf(payload) {
+  return request('POST', '/admin/question-imports', payload);
 }
 
 export async function getSettings() {

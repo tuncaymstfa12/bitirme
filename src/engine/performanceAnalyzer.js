@@ -3,6 +3,13 @@
  * Tracks topic-level performance, detects trends, and generates insights.
  */
 
+function formatLocalDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
+
 /**
  * Calculate topic mastery score
  * Combines latest mock score, trend, and consistency
@@ -164,10 +171,10 @@ export function generateInsights(exams, topics, mockResults, sessions) {
   // Study consistency
   const completedSessions = sessions.filter(s => s.status === 'completed');
   const missedSessions = sessions.filter(s => s.status === 'missed');
-  const totalAttempted = completedSessions.length + missedSessions.length;
+  const totalAll = sessions.filter(s => s.status !== 'break').length;
 
-  if (totalAttempted > 0) {
-    const completionRate = completedSessions.length / totalAttempted;
+  if (totalAll > 0) {
+    const completionRate = completedSessions.length / totalAll;
     if (completionRate < 0.5) {
       insights.push({
         type: 'warning',
@@ -245,7 +252,7 @@ export function getConsistencyData(sessions, days = 90) {
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date(today);
     d.setDate(d.getDate() - i);
-    const dateStr = d.toISOString().split('T')[0];
+    const dateStr = formatLocalDate(d);
     dayMap[dateStr] = 0;
   }
 

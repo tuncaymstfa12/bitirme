@@ -122,7 +122,7 @@ export function renderAuthView(container, { onAuthenticated, initialError = '' }
 function renderLoginForm(st) {
   return '<form id="login-form" class="auth-form">' +
     '<div class="form-group"><label class="form-label">' + t('auth.email') + '</label><input class="form-input" type="email" name="email" placeholder="' + t('auth.emailPlaceholder') + '" value="' + h(st.login.email) + '" required></div>' +
-    '<div class="form-group"><label class="form-label">' + t('auth.password') + '</label><input class="form-input" type="password" name="password" placeholder="' + t('auth.passwordPlaceholder') + '" value="' + h(st.login.password) + '" required></div>' +
+    '<div class="form-group"><label class="form-label">' + t('auth.password') + '</label><input class="form-input" type="password" name="password" placeholder="' + t('auth.passwordPlaceholder') + '" required></div>' +
     '<button class="btn btn-primary btn-lg" type="submit" ' + (st.busy ? 'disabled' : '') + '>' + (st.busy ? t('auth.signingIn') : t('auth.loginBtn')) + '</button></form>';
 }
 
@@ -133,7 +133,7 @@ function renderRegisterForm(st, lessons) {
     '<div class="form-group"><label class="form-label">' + t('auth.email') + '</label><input class="form-input" type="email" name="email" placeholder="' + t('auth.emailPlaceholder') + '" value="' + h(st.register.email) + '" required></div>' +
     '</div>' +
     '<div class="grid-2 auth-grid">' +
-    '<div class="form-group"><label class="form-label">' + t('auth.password') + '</label><input class="form-input" type="password" name="password" placeholder="' + t('auth.passwordPlaceholder') + '" value="' + h(st.register.password) + '" required></div>' +
+    '<div class="form-group"><label class="form-label">' + t('auth.password') + '</label><input class="form-input" type="password" name="password" placeholder="' + t('auth.passwordPlaceholder') + '" required></div>' +
     '<div class="form-group"><label class="form-label">' + t('auth.grade') + '</label><select class="form-select" id="register-grade" name="grade"><option value="11" ' + (st.register.grade === '11' ? 'selected' : '') + '>' + t('auth.grade11') + '</option><option value="12" ' + (st.register.grade === '12' ? 'selected' : '') + '>' + t('auth.grade12') + '</option></select></div>' +
     '</div>' +
     '<div class="grid-2 auth-grid">' +

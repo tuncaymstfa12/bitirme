@@ -7,6 +7,13 @@
 import { createStudySession, generateId } from '../data/models.js';
 import { validateSchedule } from './rules.js';
 
+function formatLocalDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
+
 /**
  * Generate a complete study schedule
  * @param {Array} rankedTopics - Output from rankTopics()
@@ -38,7 +45,7 @@ export function generateAvailableSlots(availability, constraints, startDate, end
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
     const dayOfWeek = d.getDay();
     const dayAvailability = availability[dayOfWeek] || [];
-    const dateStr = d.toISOString().split('T')[0];
+    const dateStr = formatLocalDate(d);
 
     for (const block of dayAvailability) {
       let hour = block.start;
@@ -124,7 +131,7 @@ function allocateSlots(rankedTopics, slots, constraints) {
           const lastDate = new Date(lastTopicDate[need.topic.id]);
           const currentDate = new Date(date);
           const dayDiff = (currentDate - lastDate) / (1000 * 60 * 60 * 24);
-          if (dayDiff > 0 && dayDiff < constraints.spacedRepetitionGapDays) continue;
+          if (dayDiff >= 0 && dayDiff < constraints.spacedRepetitionGapDays) continue;
         }
 
         // Enforce minDailySubjects: if the day has 4+ slots but too few unique subjects,
@@ -178,6 +185,8 @@ function insertBreaks(sessions, constraints) {
     byDate[s.date].push(s);
   }
 
+  const breakDuration = constraints.breakDurationMinutes || 15;
+  const breakEvery = constraints.breakFrequency || 3;
   const result = [];
   for (const [date, daySessions] of Object.entries(byDate)) {
     daySessions.sort((a, b) => (a.startHour * 60 + a.startMinute) - (b.startHour * 60 + b.startMinute));
@@ -187,8 +196,7 @@ function insertBreaks(sessions, constraints) {
       consecutiveStudy++;
       result.push(session);
 
-      if (consecutiveStudy >= constraints.breakFrequency) {
-        // Insert a break after this session
+      if (consecutiveStudy >= breakEvery) {
         const breakStart = session.startHour * 60 + session.startMinute + session.durationMinutes;
         result.push({
           id: generateId(),
@@ -197,13 +205,17 @@ function insertBreaks(sessions, constraints) {
           date,
           startHour: Math.floor(breakStart / 60),
           startMinute: breakStart % 60,
-          durationMinutes: 15,
+          durationMinutes: breakDuration,
           status: 'break',
           notes: 'Scheduled break',
         });
         consecutiveStudy = 0;
       }
     }
+
+    const sorted = result.filter(s => s.date === date).sort((a, b) => (a.startHour * 60 + a.startMinute) - (b.startHour * 60 + b.startMinute));
+    const otherDays = result.filter(s => s.date !== date);
+    otherDays.push(...sorted);
   }
 
   return result;

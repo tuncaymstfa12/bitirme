@@ -9,6 +9,7 @@ import {
   createTopic as apiCreateTopic, updateTopic as apiUpdateTopic, deleteTopic as apiDeleteTopic,
   createSession as apiCreateSession, deleteSession as apiDeleteSession, setSessions as apiSetSessions, updateSession as apiUpdateSession, clearSessions as apiClearSessions,
   createMockResult as apiCreateMockResult, deleteMockResult as apiDeleteMockResult,
+  createQuestion as apiCreateQuestion, updateQuestion as apiUpdateQuestion, deleteQuestion as apiDeleteQuestion, answerQuestion as apiAnswerQuestion,
   updateSettings as apiUpdateSettings,
 } from '../api/dataApi.js';
 
@@ -21,6 +22,8 @@ const defaultState = {
   timeSlots: [],
   sessions: [],
   mockResults: [],
+  questions: [],
+  questionAnswers: [],
   settings: {
     weights: {
       urgency: 0.35,
@@ -79,11 +82,37 @@ function emit(event, data) {
   globalHandlers.forEach(fn => fn({ event, data }));
 }
 
-function syncToServer(key, action) {
+function syncToServer(key, action, rollbackData) {
   if (!apiOnline) return;
   action().catch(err => {
     console.warn(`API sync failed for ${key}:`, err.message);
+    if (rollbackData) {
+      const { type, id, data } = rollbackData;
+      if (type === 'update' && id) {
+        const list = state[getListKey(key)];
+        const idx = list.findIndex(item => item.id === id);
+        if (idx >= 0) {
+          state[list][idx] = { ...state[list][idx], ...data };
+          saveState();
+        }
+      } else if (type === 'delete' && id) {
+        // Cannot easily undo delete from server
+      } else if (type === 'add') {
+        // Remove optimistically added item
+        const list = getListKey(key);
+        if (state[list]) {
+          state[list] = state[list].filter(item => item.id !== rollbackData.tempId);
+          saveState();
+        }
+      }
+      emit('change', { event: 'syncError', key });
+    }
   });
+}
+
+function getListKey(key) {
+  const map = { exam: 'exams', topic: 'topics', session: 'sessions', sessions: 'sessions', mockResult: 'mockResults', question: 'questions', answer: 'questionAnswers' };
+  return map[key] || key;
 }
 
 // --- Public API ---
@@ -101,6 +130,8 @@ export const store = {
       state.topics = data.topics || [];
       state.sessions = data.sessions || [];
       state.mockResults = data.mockResults || [];
+      state.questions = data.questions || [];
+      state.questionAnswers = data.questionAnswers || [];
       if (data.settings) {
         state.settings = deepMerge(state.settings, data.settings);
       }
@@ -155,11 +186,17 @@ export const store = {
     }
   },
   deleteExam(id) {
+    const examTopics = state.topics.filter(t => t.examId === id);
     state.exams = state.exams.filter(e => e.id !== id);
-    const topicIds = state.topics.filter(t => t.examId === id).map(t => t.id);
+    const topicIds = examTopics.map(t => t.id);
+    const removedQuestionIds = state.questions
+      .filter(q => examTopics.some(t => q.topicName === t.name && (!q.lesson || !t.lesson || q.lesson === t.lesson)))
+      .map(q => q.id);
     state.topics = state.topics.filter(t => t.examId !== id);
     state.sessions = state.sessions.filter(s => !topicIds.includes(s.topicId));
     state.mockResults = state.mockResults.filter(m => !topicIds.includes(m.topicId));
+    state.questions = state.questions.filter(q => !removedQuestionIds.includes(q.id));
+    state.questionAnswers = state.questionAnswers.filter(a => !removedQuestionIds.includes(a.questionId));
     saveState(); emit('exams:changed');
     syncToServer('exam', () => apiDeleteExam(id));
   },
@@ -184,9 +221,17 @@ export const store = {
     }
   },
   deleteTopic(id) {
+    const topic = state.topics.find(t => t.id === id);
     state.topics = state.topics.filter(t => t.id !== id);
     state.sessions = state.sessions.filter(s => s.topicId !== id);
     state.mockResults = state.mockResults.filter(m => m.topicId !== id);
+    if (topic) {
+      const removedQuestionIds = state.questions
+        .filter(q => q.topicName === topic.name && (!q.lesson || !topic.lesson || q.lesson === topic.lesson))
+        .map(q => q.id);
+      state.questions = state.questions.filter(q => !removedQuestionIds.includes(q.id));
+      state.questionAnswers = state.questionAnswers.filter(a => !removedQuestionIds.includes(a.questionId));
+    }
     saveState(); emit('topics:changed');
     syncToServer('topic', () => apiDeleteTopic(id));
   },
@@ -243,6 +288,57 @@ export const store = {
     state.mockResults = state.mockResults.filter(m => m.id !== id);
     saveState(); emit('mockResults:changed');
     syncToServer('mockResult', () => apiDeleteMockResult(id));
+  },
+
+  // --- Question Bank ---
+  getQuestions(filters = {}) {
+    let result = [...state.questions];
+    if (filters.examType) result = result.filter(q => q.examType === filters.examType);
+    if (filters.lesson) result = result.filter(q => q.lesson === filters.lesson);
+    if (filters.topicName) result = result.filter(q => q.topicName === filters.topicName);
+    return result;
+  },
+  getQuestion(id) { return state.questions.find(q => q.id === id); },
+  addQuestion(question) {
+    state.questions.push(question);
+    saveState(); emit('questions:changed', question);
+    syncToServer('question', () => apiCreateQuestion(question));
+  },
+  updateQuestion(id, updates) {
+    const idx = state.questions.findIndex(q => q.id === id);
+    if (idx >= 0) {
+      state.questions[idx] = { ...state.questions[idx], ...updates };
+      state.questionAnswers = state.questionAnswers.filter(a => a.questionId !== id);
+      saveState(); emit('questions:changed', state.questions[idx]);
+      syncToServer('question', () => apiUpdateQuestion(id, updates));
+    }
+  },
+  deleteQuestion(id) {
+    state.questions = state.questions.filter(q => q.id !== id);
+    state.questionAnswers = state.questionAnswers.filter(a => a.questionId !== id);
+    saveState(); emit('questions:changed');
+    syncToServer('question', () => apiDeleteQuestion(id));
+  },
+  getQuestionAnswers() { return [...state.questionAnswers]; },
+  getQuestionAnswer(questionId) {
+    return state.questionAnswers.find(a => a.questionId === questionId);
+  },
+  answerQuestion(questionId, selectedOption) {
+    const question = state.questions.find(q => q.id === questionId);
+    if (!question) return null;
+    const normalized = String(selectedOption || '').toUpperCase();
+    const answer = {
+      id: `${questionId}-${normalized}`,
+      questionId,
+      selectedOption: normalized,
+      isCorrect: normalized === question.correctOption,
+      answeredAt: new Date().toISOString(),
+    };
+    state.questionAnswers = state.questionAnswers.filter(a => a.questionId !== questionId);
+    state.questionAnswers.push(answer);
+    saveState(); emit('answers:changed', answer);
+    syncToServer('answer', () => apiAnswerQuestion(questionId, normalized));
+    return answer;
   },
 
   // --- Settings ---

@@ -466,6 +466,26 @@ body::before {
   background: rgba(239, 68, 68, 0.25);
 }
 
+.answer-option-btn {
+  justify-content: flex-start;
+  text-align: left;
+  white-space: normal;
+  min-height: 44px;
+}
+
+.answer-option-btn.answer-correct,
+.answer-option-btn.answer-key {
+  border-color: var(--color-success);
+  background: var(--color-success-bg);
+  color: var(--text-primary);
+}
+
+.answer-option-btn.answer-wrong {
+  border-color: var(--color-danger);
+  background: var(--color-danger-bg);
+  color: var(--text-primary);
+}
+
 .btn-success {
   background: var(--color-success-bg);
   color: var(--color-success);

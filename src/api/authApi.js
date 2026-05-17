@@ -22,7 +22,12 @@ export async function loginUserApi(email, password) {
     body: JSON.stringify({ email, password }),
   });
 
-  const data = await response.json();
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error('Sunucu yanıt vermiyor.');
+  }
   if (!response.ok) throw new Error(data.error || 'Giriş işlemi başarısız.');
 
   persistToken(data.token);
@@ -42,7 +47,12 @@ export async function fetchCurrentUserApi() {
     return null;
   }
 
-  const data = await response.json();
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    return null;
+  }
   if (!response.ok) throw new Error(data.error || 'Kullanıcı bilgisi alınamadı.');
   return data.user;
 }
@@ -59,8 +69,12 @@ export async function logoutUserApi() {
   clearStoredToken();
 
   if (!response.ok) {
-    const data = await response.json();
-    throw new Error(data.error || 'Çıkış işlemi başarısız.');
+    try {
+      const data = await response.json();
+      throw new Error(data.error || 'Çıkış işlemi başarısız.');
+    } catch {
+      // Silently fail - token already cleared
+    }
   }
 }
 

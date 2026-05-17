@@ -251,7 +251,7 @@ export const EXAM_STRUCTURE = {
         { name: "Din Kültürü", questions: 12 }
       ]
     },
-    dil: { total: 80, timeMin: 120, languages: ["İngilizce","Almanca","Fransızca","Arapça"], languages: ["İngilizce","Almanca","Fransızca","Arapça"],
+    dil: { total: 80, timeMin: 120, languages: ["İngilizce","Almanca","Fransızca","Arapça"],
       lessons: [
         { name: "İngilizce", questions: 80 }
       ]

@@ -4,10 +4,10 @@ const { Pool } = pg;
 
 const pool = new Pool({
   host: process.env.DATABASE_HOST || '127.0.0.1',
-  port: parseInt(process.env.DATABASE_PORT || '5439'),
-  database: process.env.DATABASE_NAME || 'bitime',
+  port: parseInt(process.env.DATABASE_PORT || '5432'),
+  database: process.env.DATABASE_NAME || 'bitirme',
   user: process.env.DATABASE_USER || 'postgres',
-  password: process.env.DATABASE_PASSWORD || 'Tuncay1903',
+  password: process.env.DATABASE_PASSWORD || '',
   max: 10,
   idleTimeoutMillis: 30000,
 });

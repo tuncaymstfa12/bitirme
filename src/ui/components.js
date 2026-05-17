@@ -181,6 +181,13 @@ export function drawRadarChart(canvas, data, options = {}) {
   }
 }
 
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
 /**
  * Draw a line chart on a canvas element
  */
@@ -250,8 +257,12 @@ export function drawLineChart(canvas, datasets, labels, options = {}) {
     ctx.lineTo(padding.left + (chartWidth / (labels.length - 1 || 1)) * (values.length - 1), padding.top + chartHeight);
     ctx.lineTo(padding.left, padding.top + chartHeight);
     ctx.closePath();
-    ctx.fillStyle = color.replace(')', ', 0.08)').replace('rgb', 'rgba');
-    ctx.fill();
+if (color.startsWith('#')) {
+        ctx.fillStyle = hexToRgba(color, 0.08);
+      } else {
+        ctx.fillStyle = color.replace(')', ', 0.08)').replace('rgb', 'rgba');
+      }
+      ctx.fill();
 
     // Points
     for (let i = 0; i < values.length; i++) {
@@ -331,6 +342,13 @@ export function drawDonutChart(canvas, segments, options = {}) {
 }
 
 // ===== Helper Renderers =====
+
+export function formatLocalDate(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
 
 export function formatDate(dateString) {
   return formatDateLocale(dateString);

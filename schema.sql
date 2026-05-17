@@ -192,7 +192,106 @@ CREATE INDEX idx_mock_results_topic   ON mock_results (topic_id);
 CREATE INDEX idx_mock_results_student ON mock_results (student_id);
 
 -- ============================================================
--- 9. STUDENT_SETTINGS
+-- 9. QUESTION BANK
+-- ============================================================
+CREATE TABLE questions (
+  id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  student_id     UUID        NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  exam_type      VARCHAR(3)  NOT NULL CHECK (exam_type IN ('TYT', 'AYT')),
+  track          VARCHAR(20) NOT NULL DEFAULT 'sayisal',
+  lesson         VARCHAR(100) NOT NULL,
+  topic_name     VARCHAR(255) NOT NULL,
+  question_no    INT,
+  question_text  TEXT        NOT NULL,
+  question_image_url TEXT,
+  correct_option CHAR(1)     NOT NULL CHECK (correct_option IN ('A','B','C','D','E')),
+  explanation    TEXT        NOT NULL DEFAULT '',
+  source_name    VARCHAR(255) NOT NULL DEFAULT '',
+  source_year    INT,
+  difficulty     SMALLINT    NOT NULL DEFAULT 3 CHECK (difficulty BETWEEN 1 AND 5),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_questions_student ON questions (student_id);
+CREATE INDEX idx_questions_topic   ON questions (student_id, exam_type, lesson, topic_name);
+
+CREATE TABLE question_options (
+  id               UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+  question_id      UUID    NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+  option_key       CHAR(1) NOT NULL CHECK (option_key IN ('A','B','C','D','E')),
+  option_text      TEXT    NOT NULL DEFAULT '',
+  option_image_url TEXT,
+  UNIQUE (question_id, option_key)
+);
+
+CREATE INDEX idx_question_options_question ON question_options (question_id);
+
+CREATE TABLE student_answers (
+  id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  student_id      UUID        NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  question_id     UUID        NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+  selected_option CHAR(1)     NOT NULL CHECK (selected_option IN ('A','B','C','D','E')),
+  is_correct      BOOLEAN     NOT NULL,
+  answered_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (student_id, question_id)
+);
+
+CREATE INDEX idx_student_answers_student ON student_answers (student_id);
+CREATE INDEX idx_student_answers_question ON student_answers (question_id);
+
+-- ============================================================
+-- 10. GLOBAL ADMIN QUESTION IMPORTS
+-- ============================================================
+CREATE TABLE admin_question_imports (
+  id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  uploaded_by    UUID        REFERENCES students(id) ON DELETE SET NULL,
+  exam_type      VARCHAR(3)  NOT NULL CHECK (exam_type IN ('TYT', 'AYT')),
+  track          VARCHAR(20) NOT NULL DEFAULT 'sayisal',
+  source_name    VARCHAR(255) NOT NULL,
+  source_year    INT,
+  status         VARCHAR(20) NOT NULL DEFAULT 'completed',
+  raw_text       TEXT        NOT NULL DEFAULT '',
+  answer_key     JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  imported_count INT         NOT NULL DEFAULT 0,
+  review_count   INT         NOT NULL DEFAULT 0,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_admin_imports_created ON admin_question_imports (created_at DESC);
+
+CREATE TABLE global_questions (
+  id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  import_id        UUID        NOT NULL REFERENCES admin_question_imports(id) ON DELETE CASCADE,
+  exam_type        VARCHAR(3)  NOT NULL CHECK (exam_type IN ('TYT', 'AYT')),
+  track            VARCHAR(20) NOT NULL DEFAULT 'sayisal',
+  lesson           VARCHAR(100) NOT NULL DEFAULT '',
+  topic_name       VARCHAR(255) NOT NULL DEFAULT '',
+  question_no      INT         NOT NULL,
+  question_text    TEXT        NOT NULL,
+  correct_option   CHAR(1)     CHECK (correct_option IN ('A','B','C','D','E')),
+  topic_confidence NUMERIC(4,3) NOT NULL DEFAULT 0,
+  source_name      VARCHAR(255) NOT NULL DEFAULT '',
+  source_year      INT,
+  needs_review     BOOLEAN     NOT NULL DEFAULT false,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (exam_type, source_name, source_year, question_no)
+);
+
+CREATE INDEX idx_global_questions_import ON global_questions (import_id);
+CREATE INDEX idx_global_questions_topic ON global_questions (exam_type, lesson, topic_name);
+
+CREATE TABLE global_question_options (
+  id          UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+  question_id UUID    NOT NULL REFERENCES global_questions(id) ON DELETE CASCADE,
+  option_key  CHAR(1) NOT NULL CHECK (option_key IN ('A','B','C','D','E')),
+  option_text TEXT    NOT NULL DEFAULT '',
+  UNIQUE (question_id, option_key)
+);
+
+CREATE INDEX idx_global_question_options_question ON global_question_options (question_id);
+
+-- ============================================================
+-- 11. STUDENT_SETTINGS
 -- ============================================================
 CREATE TABLE student_settings (
   student_id         UUID  PRIMARY KEY REFERENCES students(id) ON DELETE CASCADE,
@@ -218,7 +317,7 @@ CREATE TABLE student_settings (
 );
 
 -- ============================================================
--- 10. AUTH_SESSIONS
+-- 12. AUTH_SESSIONS
 -- ============================================================
 CREATE TABLE auth_sessions (
   id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),

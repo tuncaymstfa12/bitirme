@@ -1,9 +1,14 @@
 import http from 'node:http';
+import { execFile as execFileCallback } from 'node:child_process';
 import { scrypt as scryptCallback, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { promisify } from 'node:util';
-import { query } from './db.js';
+import { query, getClient } from './db.js';
 
 const scrypt = promisify(scryptCallback);
+const execFile = promisify(execFileCallback);
 const PORT = Number(process.env.AUTH_API_PORT || 3001);
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -104,6 +109,33 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'DELETE') return await deleteMockResult(studentId, mockMatch[1], res);
     }
 
+    // Question Bank
+    if (req.method === 'GET' && path === '/api/questions') return await getQuestions(studentId, url, res);
+    if (req.method === 'POST' && path === '/api/questions') return await createQuestion(studentId, req, res);
+
+    const questionAnswerMatch = path.match(/^\/api\/questions\/([a-f0-9-]+)\/answer$/);
+    if (questionAnswerMatch && req.method === 'POST') {
+      return await answerQuestion(studentId, questionAnswerMatch[1], req, res);
+    }
+
+    const questionMatch = path.match(/^\/api\/questions\/([a-f0-9-]+)$/);
+    if (questionMatch) {
+      const id = questionMatch[1];
+      if (req.method === 'PUT') return await updateQuestion(studentId, id, req, res);
+      if (req.method === 'DELETE') return await deleteQuestion(studentId, id, res);
+    }
+
+    if (req.method === 'POST' && path === '/api/ocr/questions') {
+      return await extractQuestionsWithOcr(req, res);
+    }
+
+    if (req.method === 'GET' && path === '/api/admin/question-imports') {
+      return await getAdminQuestionImports(res);
+    }
+    if (req.method === 'POST' && path === '/api/admin/question-imports') {
+      return await importAdminQuestionPdf(studentId, req, res);
+    }
+
     // Settings
     if (req.method === 'GET' && path === '/api/settings') return await getSettings(studentId, res);
     if (req.method === 'PUT' && path === '/api/settings') return await updateSettings(studentId, req, res);
@@ -137,7 +169,7 @@ async function handleRegister(body, res) {
   const partId = partMap[body.part] || 1;
   const passwordHash = await hashPassword(body.password);
   const birthdate = body.birthdate || String(new Date().getFullYear() - (body.age || 17)) + '-01-01';
-  const age = body.age || 17;
+  const age = Math.min(20, Math.max(14, body.age || 17));
   const phone = body.phoneNumber || null;
 
   const { rows: userRows } = await query(
@@ -208,11 +240,13 @@ async function handleLogout(req, res) {
 // ============================================================
 
 async function handleSync(studentId, res) {
-  const [exams, topics, sessions, mockResults, settings] = await Promise.all([
+  const [exams, topics, sessions, mockResults, questions, answers, settings] = await Promise.all([
     query('SELECT * FROM exams WHERE student_id = $1 ORDER BY created_at', [studentId]),
     query('SELECT * FROM topics WHERE student_id = $1 ORDER BY created_at', [studentId]),
     query('SELECT * FROM study_sessions WHERE student_id = $1 ORDER BY date, start_hour, start_minute', [studentId]),
     query('SELECT * FROM mock_results WHERE student_id = $1 ORDER BY created_at', [studentId]),
+    getQuestionRows(studentId, {}),
+    query('SELECT * FROM student_answers WHERE student_id = $1 ORDER BY answered_at DESC', [studentId]),
     query('SELECT * FROM student_settings WHERE student_id = $1', [studentId]),
   ]);
 
@@ -223,6 +257,8 @@ async function handleSync(studentId, res) {
     topics: mapTopics(topics.rows),
     sessions: mapSessions(sessions.rows),
     mockResults: mapMockResults(mockResults.rows),
+    questions: mapQuestions(questions.rows),
+    questionAnswers: mapQuestionAnswers(answers.rows),
     settings: mapSettings(dbSettings),
   });
 }
@@ -374,6 +410,8 @@ async function updateSession(studentId, id, req, res) {
 }
 
 async function deleteSession(studentId, id, res) {
+  const { rows } = await query('SELECT id FROM study_sessions WHERE id = $1 AND student_id = $2', [id, studentId]);
+  if (rows.length === 0) return sendJson(res, 404, { error: 'Session not found' });
   await query('DELETE FROM study_sessions WHERE id = $1 AND student_id = $2', [id, studentId]);
   return sendJson(res, 200, { success: true });
 }
@@ -409,6 +447,619 @@ async function createMockResult(studentId, req, res) {
 async function deleteMockResult(studentId, id, res) {
   await query('DELETE FROM mock_results WHERE id = $1 AND student_id = $2', [id, studentId]);
   return sendJson(res, 200, { success: true });
+}
+
+// ============================================================
+// QUESTION BANK
+// ============================================================
+
+async function getQuestions(studentId, url, res) {
+  const filters = {
+    examType: url.searchParams.get('examType'),
+    lesson: url.searchParams.get('lesson'),
+    topicName: url.searchParams.get('topicName'),
+  };
+  const { rows } = await getQuestionRows(studentId, filters);
+  return sendJson(res, 200, mapQuestions(rows));
+}
+
+async function createQuestion(studentId, req, res) {
+  const body = await readJsonBody(req);
+  validateQuestion(body);
+
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `INSERT INTO questions
+        (id, student_id, exam_type, track, lesson, topic_name, question_no, question_text, question_image_url, correct_option, explanation, source_name, source_year, difficulty)
+       VALUES (COALESCE($1, gen_random_uuid()), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       RETURNING *`,
+      [
+        body.id || null,
+        studentId,
+        body.examType || 'TYT',
+        body.track || 'sayisal',
+        body.lesson,
+        body.topicName,
+        body.questionNo || null,
+        body.questionText,
+        body.questionImageUrl || null,
+        String(body.correctOption).toUpperCase(),
+        body.explanation || '',
+        body.sourceName || '',
+        body.sourceYear || null,
+        body.difficulty || 3,
+      ]
+    );
+
+    for (const option of normalizeQuestionOptions(body.options)) {
+      await client.query(
+        `INSERT INTO question_options (question_id, option_key, option_text, option_image_url)
+         VALUES ($1, $2, $3, $4)`,
+        [rows[0].id, option.optionKey, option.optionText, option.optionImageUrl || null]
+      );
+    }
+
+    await client.query('COMMIT');
+    const created = await getQuestionRows(studentId, { id: rows[0].id });
+    return sendJson(res, 201, mapQuestion(created.rows[0]));
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function updateQuestion(studentId, id, req, res) {
+  const body = await readJsonBody(req);
+  validateQuestion({ ...body, id }, true);
+
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `UPDATE questions SET
+        exam_type = $1, track = $2, lesson = $3, topic_name = $4, question_no = $5,
+        question_text = $6, question_image_url = $7, correct_option = $8,
+        explanation = $9, source_name = $10, source_year = $11, difficulty = $12
+       WHERE id = $13 AND student_id = $14
+       RETURNING *`,
+      [
+        body.examType || 'TYT',
+        body.track || 'sayisal',
+        body.lesson,
+        body.topicName,
+        body.questionNo || null,
+        body.questionText,
+        body.questionImageUrl || null,
+        String(body.correctOption).toUpperCase(),
+        body.explanation || '',
+        body.sourceName || '',
+        body.sourceYear || null,
+        body.difficulty || 3,
+        id,
+        studentId,
+      ]
+    );
+    if (rows.length === 0) {
+      await client.query('ROLLBACK');
+      return sendJson(res, 404, { error: 'Question not found' });
+    }
+
+    await client.query('DELETE FROM student_answers WHERE question_id = $1 AND student_id = $2', [id, studentId]);
+    await client.query('DELETE FROM question_options WHERE question_id = $1', [id]);
+    for (const option of normalizeQuestionOptions(body.options)) {
+      await client.query(
+        `INSERT INTO question_options (question_id, option_key, option_text, option_image_url)
+         VALUES ($1, $2, $3, $4)`,
+        [id, option.optionKey, option.optionText, option.optionImageUrl || null]
+      );
+    }
+
+    await client.query('COMMIT');
+    const updated = await getQuestionRows(studentId, { id });
+    return sendJson(res, 200, mapQuestion(updated.rows[0]));
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function deleteQuestion(studentId, id, res) {
+  const { rows } = await query('DELETE FROM questions WHERE id = $1 AND student_id = $2 RETURNING id', [id, studentId]);
+  if (rows.length === 0) return sendJson(res, 404, { error: 'Question not found' });
+  return sendJson(res, 200, { success: true });
+}
+
+async function answerQuestion(studentId, id, req, res) {
+  const body = await readJsonBody(req);
+  const selectedOption = String(body.selectedOption || '').toUpperCase();
+  if (!['A', 'B', 'C', 'D', 'E'].includes(selectedOption)) {
+    return sendJson(res, 400, { error: 'Geçerli bir şık seçiniz.' });
+  }
+
+  const { rows: questionRows } = await query('SELECT id, correct_option FROM questions WHERE id = $1 AND student_id = $2', [id, studentId]);
+  if (questionRows.length === 0) return sendJson(res, 404, { error: 'Question not found' });
+
+  const isCorrect = selectedOption === questionRows[0].correct_option;
+  const { rows } = await query(
+    `INSERT INTO student_answers (student_id, question_id, selected_option, is_correct)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (student_id, question_id)
+     DO UPDATE SET selected_option = EXCLUDED.selected_option, is_correct = EXCLUDED.is_correct, answered_at = now()
+     RETURNING *`,
+    [studentId, id, selectedOption, isCorrect]
+  );
+
+  return sendJson(res, 200, mapQuestionAnswer(rows[0]));
+}
+
+async function getQuestionRows(studentId, filters = {}) {
+  const conditions = ['q.student_id = $1'];
+  const values = [studentId];
+  let n = 2;
+
+  if (filters.id) {
+    conditions.push(`q.id = $${n++}`);
+    values.push(filters.id);
+  }
+  if (filters.examType) {
+    conditions.push(`q.exam_type = $${n++}`);
+    values.push(filters.examType);
+  }
+  if (filters.lesson) {
+    conditions.push(`q.lesson = $${n++}`);
+    values.push(filters.lesson);
+  }
+  if (filters.topicName) {
+    conditions.push(`q.topic_name = $${n++}`);
+    values.push(filters.topicName);
+  }
+
+  return await query(
+    `SELECT
+       q.*,
+       COALESCE(
+         jsonb_agg(
+           jsonb_build_object(
+             'optionKey', qo.option_key,
+             'optionText', qo.option_text,
+             'optionImageUrl', qo.option_image_url
+           )
+           ORDER BY qo.option_key
+         ) FILTER (WHERE qo.id IS NOT NULL),
+         '[]'::jsonb
+       ) AS options
+     FROM questions q
+     LEFT JOIN question_options qo ON qo.question_id = q.id
+     WHERE ${conditions.join(' AND ')}
+     GROUP BY q.id
+     ORDER BY q.created_at DESC`,
+    values
+  );
+}
+
+function validateQuestion(body, isUpdate = false) {
+  const required = ['lesson', 'topicName', 'questionText', 'correctOption'];
+  for (const field of required) {
+    if (!String(body?.[field] || '').trim()) {
+      throw httpError(400, `${field} gereklidir.`);
+    }
+  }
+  if (!['TYT', 'AYT'].includes(String(body.examType || 'TYT'))) {
+    throw httpError(400, 'Geçerli bir sınav türü seçiniz.');
+  }
+  if (!['A', 'B', 'C', 'D', 'E'].includes(String(body.correctOption || '').toUpperCase())) {
+    throw httpError(400, 'Doğru cevap A-E arasında olmalıdır.');
+  }
+  const options = normalizeQuestionOptions(body.options);
+  if (options.length !== 5) {
+    throw httpError(400, 'A, B, C, D ve E şıkları gereklidir.');
+  }
+  if (options.some(option => !option.optionText && !option.optionImageUrl)) {
+    throw httpError(400, 'Her şık için metin veya görsel gereklidir.');
+  }
+}
+
+function normalizeQuestionOptions(options = []) {
+  const optionMap = new Map();
+  for (const option of options) {
+    const key = String(option.optionKey || option.key || '').toUpperCase();
+    if (!['A', 'B', 'C', 'D', 'E'].includes(key)) continue;
+    optionMap.set(key, {
+      optionKey: key,
+      optionText: String(option.optionText || option.text || '').trim(),
+      optionImageUrl: String(option.optionImageUrl || '').trim(),
+    });
+  }
+  return ['A', 'B', 'C', 'D', 'E']
+    .map(key => optionMap.get(key))
+    .filter(Boolean);
+}
+
+async function extractQuestionsWithOcr(req, res) {
+  const body = await readJsonBody(req);
+  const fileName = String(body.fileName || '').toLowerCase();
+  const fileBase64 = String(body.fileBase64 || '');
+  const lang = String(body.lang || 'tur+eng');
+
+  if (!fileName || !fileBase64) {
+    return sendJson(res, 400, { error: 'Dosya gereklidir.' });
+  }
+
+  const data = Buffer.from(fileBase64.replace(/^data:[^,]+,/, ''), 'base64');
+  if (!data.length) return sendJson(res, 400, { error: 'Dosya okunamadı.' });
+  if (data.length > 20 * 1024 * 1024) return sendJson(res, 413, { error: 'Dosya en fazla 20MB olabilir.' });
+
+  const workDir = await mkdtemp(path.join(os.tmpdir(), 'bitirme-ocr-'));
+  try {
+    const ext = path.extname(fileName) || '.png';
+    const inputPath = path.join(workDir, 'input' + ext);
+    await writeFile(inputPath, data);
+
+    const imagePaths = await prepareOcrImages(inputPath, ext, workDir);
+    const pageTexts = [];
+    for (const imagePath of imagePaths) {
+      const { stdout } = await execFile('tesseract', [imagePath, 'stdout', '-l', lang, '--psm', '6'], { timeout: 60000 });
+      pageTexts.push(stdout);
+    }
+
+    const rawText = pageTexts.join('\n\n').trim();
+    return sendJson(res, 200, {
+      rawText,
+      questions: parseOcrQuestions(rawText),
+    });
+  } catch (error) {
+    return sendJson(res, 500, { error: 'OCR çalıştırılamadı: ' + error.message });
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+}
+
+async function prepareOcrImages(inputPath, ext, workDir) {
+  if (ext === '.pdf') {
+    const prefix = path.join(workDir, 'page');
+    await execFile('pdftoppm', ['-png', '-r', '220', '-f', '1', '-l', '5', inputPath, prefix], { timeout: 60000 });
+    const files = await readdir(workDir);
+    return files
+      .filter(file => file.startsWith('page-') && file.endsWith('.png'))
+      .sort()
+      .map(file => path.join(workDir, file));
+  }
+  return [inputPath];
+}
+
+function parseOcrQuestions(rawText) {
+  const normalized = rawText
+    .replace(/\r/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  if (!normalized) return [];
+
+  const parts = normalized.split(/\n(?=\s*\d{1,3}\s*[\).:-]\s+)/g);
+  return parts
+    .map(parseQuestionBlock)
+    .filter(question => question.questionText || question.options.some(option => option.optionText));
+}
+
+function parseQuestionBlock(block) {
+  const questionNoMatch = block.match(/^\s*(\d{1,3})\s*[\).:-]\s*/);
+  const questionNo = questionNoMatch ? Number(questionNoMatch[1]) : null;
+  const withoutNo = questionNoMatch ? block.slice(questionNoMatch[0].length) : block;
+  const optionPattern = /(?:^|\n|\s)(?:\(?([A-E])\)?\s*[\).:-]|([A-E])\s{2,})\s*/g;
+  const matches = [...withoutNo.matchAll(optionPattern)];
+
+  if (matches.length === 0) {
+    return { questionNo, questionText: withoutNo.trim(), options: [], correctOption: '' };
+  }
+
+  const questionText = withoutNo.slice(0, matches[0].index).trim();
+  const options = matches.map((match, idx) => {
+    const start = match.index + match[0].length;
+    const end = idx + 1 < matches.length ? matches[idx + 1].index : withoutNo.length;
+    return {
+      optionKey: match[1] || match[2],
+      optionText: withoutNo.slice(start, end).trim(),
+    };
+  });
+
+  return { questionNo, questionText, options, correctOption: '' };
+}
+
+async function getAdminQuestionImports(res) {
+  const { rows } = await query(
+    `SELECT id, exam_type, track, source_name, source_year, status, imported_count, review_count, created_at
+     FROM admin_question_imports
+     ORDER BY created_at DESC
+     LIMIT 25`
+  );
+  return sendJson(res, 200, rows.map(mapAdminImport));
+}
+
+async function importAdminQuestionPdf(studentId, req, res) {
+  const body = await readJsonBody(req);
+  const examType = String(body.examType || 'TYT').toUpperCase();
+  const track = String(body.track || 'sayisal');
+  const sourceName = String(body.sourceName || '').trim();
+  const sourceYear = body.sourceYear ? Number(body.sourceYear) : null;
+  const curriculumTopics = Array.isArray(body.curriculumTopics) ? body.curriculumTopics : [];
+
+  if (!['TYT', 'AYT'].includes(examType)) return sendJson(res, 400, { error: 'Geçerli sınav türü seçiniz.' });
+  if (!sourceName) return sendJson(res, 400, { error: 'Kaynak adı gereklidir.' });
+  if (!body.questionFileBase64 || !body.questionFileName) return sendJson(res, 400, { error: 'Soru PDF dosyası gereklidir.' });
+
+  const questionText = await extractTextFromUploadedFile(body.questionFileName, body.questionFileBase64);
+  const answerText = body.answerFileBase64
+    ? await extractTextFromUploadedFile(body.answerFileName || 'answers.pdf', body.answerFileBase64)
+    : questionText;
+  const answerKey = parseAnswerKey(answerText);
+  const parsedQuestions = parseExamQuestions(questionText);
+  const prepared = parsedQuestions
+    .filter(question => question.questionNo && question.questionText && question.options.length >= 4)
+    .map(question => {
+      const topicMatch = matchCurriculumTopic(question, curriculumTopics);
+      const correctOption = answerKey[String(question.questionNo)] || null;
+      return {
+        ...question,
+        lesson: topicMatch.lesson || '',
+        topicName: topicMatch.topicName || '',
+        topicConfidence: topicMatch.confidence || 0,
+        correctOption,
+        needsReview: !correctOption || !topicMatch.topicName || topicMatch.confidence < 0.18 || question.options.length < 5,
+      };
+    });
+
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+    const { rows: importRows } = await client.query(
+      `INSERT INTO admin_question_imports
+        (uploaded_by, exam_type, track, source_name, source_year, raw_text, answer_key, imported_count, review_count)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       RETURNING *`,
+      [
+        studentId,
+        examType,
+        track,
+        sourceName,
+        sourceYear,
+        questionText.slice(0, 500000),
+        JSON.stringify(answerKey),
+        prepared.length,
+        prepared.filter(question => question.needsReview).length,
+      ]
+    );
+
+    const importId = importRows[0].id;
+    let saved = 0;
+    for (const question of prepared) {
+      const { rows } = await client.query(
+        `INSERT INTO global_questions
+          (import_id, exam_type, track, lesson, topic_name, question_no, question_text, correct_option, topic_confidence, source_name, source_year, needs_review)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         ON CONFLICT (exam_type, source_name, source_year, question_no)
+         DO UPDATE SET
+           import_id = EXCLUDED.import_id,
+           track = EXCLUDED.track,
+           lesson = EXCLUDED.lesson,
+           topic_name = EXCLUDED.topic_name,
+           question_text = EXCLUDED.question_text,
+           correct_option = EXCLUDED.correct_option,
+           topic_confidence = EXCLUDED.topic_confidence,
+           needs_review = EXCLUDED.needs_review
+         RETURNING id`,
+        [
+          importId,
+          examType,
+          track,
+          question.lesson,
+          question.topicName,
+          question.questionNo,
+          question.questionText,
+          question.correctOption,
+          question.topicConfidence,
+          sourceName,
+          sourceYear,
+          question.needsReview,
+        ]
+      );
+      const questionId = rows[0].id;
+      await client.query('DELETE FROM global_question_options WHERE question_id = $1', [questionId]);
+      for (const option of normalizeGlobalOptions(question.options)) {
+        await client.query(
+          `INSERT INTO global_question_options (question_id, option_key, option_text)
+           VALUES ($1,$2,$3)`,
+          [questionId, option.optionKey, option.optionText]
+        );
+      }
+      saved++;
+    }
+
+    await client.query(
+      'UPDATE admin_question_imports SET imported_count = $1 WHERE id = $2',
+      [saved, importId]
+    );
+    await client.query('COMMIT');
+    return sendJson(res, 201, {
+      import: mapAdminImport({ ...importRows[0], imported_count: saved }),
+      importedCount: saved,
+      reviewCount: prepared.filter(question => question.needsReview).length,
+      detectedQuestions: parsedQuestions.length,
+      detectedAnswers: Object.keys(answerKey).length,
+      preview: prepared.slice(0, 10),
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function extractTextFromUploadedFile(fileName, fileBase64) {
+  const data = Buffer.from(String(fileBase64 || '').replace(/^data:[^,]+,/, ''), 'base64');
+  if (!data.length) throw httpError(400, 'Dosya okunamadı.');
+  if (data.length > 60 * 1024 * 1024) throw httpError(413, 'Dosya en fazla 60MB olabilir.');
+
+  const workDir = await mkdtemp(path.join(os.tmpdir(), 'bitirme-admin-import-'));
+  try {
+    const ext = path.extname(String(fileName || '').toLowerCase()) || '.pdf';
+    const inputPath = path.join(workDir, 'input' + ext);
+    await writeFile(inputPath, data);
+
+    if (ext === '.pdf') {
+      const textPath = path.join(workDir, 'text.txt');
+      try {
+        await execFile('pdftotext', ['-layout', inputPath, textPath], { timeout: 90000 });
+        const text = await readFile(textPath, 'utf8');
+        if (text.trim().length > 500) return normalizeExtractedText(text);
+      } catch {
+        // Fallback to OCR below.
+      }
+    }
+
+    const imagePaths = await prepareAdminOcrImages(inputPath, ext, workDir);
+    const pageTexts = [];
+    for (const imagePath of imagePaths) {
+      const { stdout } = await execFile('tesseract', [imagePath, 'stdout', '-l', 'tur+eng', '--psm', '6'], { timeout: 90000 });
+      pageTexts.push(stdout);
+    }
+    return normalizeExtractedText(pageTexts.join('\n\n'));
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+}
+
+async function prepareAdminOcrImages(inputPath, ext, workDir) {
+  if (ext === '.pdf') {
+    const prefix = path.join(workDir, 'page');
+    await execFile('pdftoppm', ['-png', '-r', '220', '-f', '1', '-l', '80', inputPath, prefix], { timeout: 120000 });
+    const files = await readdir(workDir);
+    return files
+      .filter(file => file.startsWith('page-') && file.endsWith('.png'))
+      .sort()
+      .map(file => path.join(workDir, file));
+  }
+  return [inputPath];
+}
+
+function normalizeExtractedText(text) {
+  return String(text || '')
+    .replace(/\r/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{4,}/g, '\n\n\n')
+    .trim();
+}
+
+function parseExamQuestions(rawText) {
+  const text = normalizeExtractedText(rawText);
+  const starts = [...text.matchAll(/(?:^|\n)\s*(\d{1,3})\s*[\).:-]\s+/g)]
+    .map(match => ({ index: match.index + (match[0].startsWith('\n') ? 1 : 0), no: Number(match[1]) }))
+    .filter(item => item.no >= 1 && item.no <= 200);
+
+  const questions = [];
+  for (let i = 0; i < starts.length; i++) {
+    const start = starts[i].index;
+    const end = i + 1 < starts.length ? starts[i + 1].index : text.length;
+    const block = text.slice(start, end).trim();
+    const parsed = parseQuestionBlock(block);
+    if (parsed.questionNo) questions.push(parsed);
+  }
+  return dedupeQuestions(questions);
+}
+
+function dedupeQuestions(questions) {
+  const byNo = new Map();
+  for (const question of questions) {
+    const existing = byNo.get(question.questionNo);
+    if (!existing || question.options.length > existing.options.length || question.questionText.length > existing.questionText.length) {
+      byNo.set(question.questionNo, question);
+    }
+  }
+  return [...byNo.values()].sort((a, b) => a.questionNo - b.questionNo);
+}
+
+function parseAnswerKey(text) {
+  const normalized = normalizeExtractedText(text).toUpperCase();
+  const answerKey = {};
+  const patterns = [
+    /(?:^|[\s\n])(\d{1,3})\s*[\).:-]?\s*([A-E])(?:\s|$)/g,
+    /(?:SORU|CEVAP)\s*(\d{1,3})\D{0,8}([A-E])\b/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of normalized.matchAll(pattern)) {
+      const no = Number(match[1]);
+      if (no >= 1 && no <= 200) answerKey[String(no)] = match[2];
+    }
+  }
+  return answerKey;
+}
+
+function matchCurriculumTopic(question, curriculumTopics) {
+  const haystack = removeTurkishMarks((question.questionText + ' ' + question.options.map(option => option.optionText).join(' ')).toLowerCase());
+  let best = { lesson: '', topicName: '', confidence: 0 };
+
+  for (const item of curriculumTopics) {
+    const topicName = String(item.topicName || item.name || '').trim();
+    const lesson = String(item.lesson || '').trim();
+    if (!topicName || !lesson) continue;
+
+    const topicWords = tokenizeTopic(topicName);
+    const lessonWords = tokenizeTopic(lesson);
+    let score = 0;
+    for (const word of topicWords) {
+      if (word.length >= 4 && haystack.includes(word)) score += 3;
+      else if (word.length >= 3 && haystack.includes(word)) score += 1.5;
+    }
+    for (const word of lessonWords) {
+      if (word.length >= 4 && haystack.includes(word)) score += 0.5;
+    }
+
+    const confidence = Math.min(1, score / Math.max(6, topicWords.length * 3));
+    if (confidence > best.confidence) best = { lesson, topicName, confidence: Math.round(confidence * 1000) / 1000 };
+  }
+
+  return best;
+}
+
+function tokenizeTopic(value) {
+  return removeTurkishMarks(String(value).toLowerCase())
+    .split(/[^a-z0-9]+/g)
+    .filter(word => word.length >= 3 && !['tyt', 'ayt', 've', 'ile', 'bir'].includes(word));
+}
+
+function removeTurkishMarks(value) {
+  return String(value)
+    .replaceAll('ı', 'i')
+    .replaceAll('ğ', 'g')
+    .replaceAll('ü', 'u')
+    .replaceAll('ş', 's')
+    .replaceAll('ö', 'o')
+    .replaceAll('ç', 'c')
+    .replaceAll('İ', 'i')
+    .replaceAll('Ğ', 'g')
+    .replaceAll('Ü', 'u')
+    .replaceAll('Ş', 's')
+    .replaceAll('Ö', 'o')
+    .replaceAll('Ç', 'c');
+}
+
+function normalizeGlobalOptions(options) {
+  const optionMap = new Map();
+  for (const option of options) {
+    const key = String(option.optionKey || '').toUpperCase();
+    if (!['A', 'B', 'C', 'D', 'E'].includes(key)) continue;
+    optionMap.set(key, String(option.optionText || '').trim());
+  }
+  return ['A', 'B', 'C', 'D', 'E']
+    .filter(key => optionMap.has(key))
+    .map(key => ({ optionKey: key, optionText: optionMap.get(key) }));
 }
 
 // ============================================================
@@ -465,7 +1116,7 @@ async function updateProfile(studentId, req, res) {
   if (body.name) { parts.push('name = $' + (n++)); vals.push(body.name.trim()); }
   if (body.phoneNumber !== undefined) { parts.push('phone_number = $' + (n++)); vals.push(body.phoneNumber || null); }
   if (body.birthdate) { parts.push('birthdate = $' + (n++)); vals.push(body.birthdate); }
-  if (body.age) { parts.push('age = $' + (n++)); vals.push(parseInt(body.age)); }
+  if (body.age) { const parsedAge = parseInt(body.age); if (!isNaN(parsedAge) && parsedAge >= 14 && parsedAge <= 20) { parts.push('age = $' + (n++)); vals.push(parsedAge); } }
   if (parts.length > 0) {
     vals.push(studentId);
     await query('UPDATE students SET ' + parts.join(', ') + ' WHERE id = $' + n, vals);
@@ -482,6 +1133,9 @@ function validateRegistration(body) {
       throw httpError(400, `${field} gereklidir.`);
     }
   }
+  if (String(body.name || '').trim().length < 2) {
+    throw httpError(400, 'İsim en az 2 karakter olmalıdır.');
+  }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) {
     throw httpError(400, 'Geçerli bir e-posta adresi giriniz.');
   }
@@ -490,11 +1144,18 @@ function validateRegistration(body) {
   }
 }
 
+let lastCleanup = 0;
+const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+
 async function getSession(req) {
   const token = extractBearerToken(req);
   if (!token) return null;
 
-  await query('SELECT cleanup_expired_sessions()');
+  const now = Date.now();
+  if (now - lastCleanup > CLEANUP_INTERVAL_MS) {
+    await query('SELECT cleanup_expired_sessions()');
+    lastCleanup = now;
+  }
 
   const { rows } = await query(
     'SELECT * FROM auth_sessions WHERE token = $1 AND expires_at > now()',
@@ -569,6 +1230,54 @@ function mapMockResult(row) {
 }
 function mapMockResults(rows) { return rows.map(mapMockResult); }
 
+function mapQuestion(row) {
+  return {
+    id: row.id,
+    studentId: row.student_id,
+    examType: row.exam_type,
+    track: row.track,
+    lesson: row.lesson,
+    topicName: row.topic_name,
+    questionNo: row.question_no,
+    questionText: row.question_text,
+    questionImageUrl: row.question_image_url || '',
+    options: Array.isArray(row.options) ? row.options : [],
+    correctOption: row.correct_option,
+    explanation: row.explanation || '',
+    sourceName: row.source_name || '',
+    sourceYear: row.source_year,
+    difficulty: row.difficulty,
+    createdAt: row.created_at,
+  };
+}
+function mapQuestions(rows) { return rows.map(mapQuestion); }
+
+function mapQuestionAnswer(row) {
+  return {
+    id: row.id,
+    studentId: row.student_id,
+    questionId: row.question_id,
+    selectedOption: row.selected_option,
+    isCorrect: row.is_correct,
+    answeredAt: row.answered_at,
+  };
+}
+function mapQuestionAnswers(rows) { return rows.map(mapQuestionAnswer); }
+
+function mapAdminImport(row) {
+  return {
+    id: row.id,
+    examType: row.exam_type,
+    track: row.track,
+    sourceName: row.source_name,
+    sourceYear: row.source_year,
+    status: row.status,
+    importedCount: row.imported_count,
+    reviewCount: row.review_count,
+    createdAt: row.created_at,
+  };
+}
+
 function mapSettings(row) {
   return {
     weights: row.weights || { urgency: 0.35, topicWeight: 0.25, weakness: 0.25, performance: 0.15 },
@@ -604,6 +1313,108 @@ function httpError(statusCode, message) {
 // STARTUP
 // ============================================================
 
-server.listen(PORT, () => {
-  console.log(`API server listening on http://localhost:${PORT}`);
+ensureQuestionSchema().catch(error => {
+  console.error('Question schema migration failed:', error.message);
+}).finally(() => {
+  server.listen(PORT, () => {
+    console.log(`API server listening on http://localhost:${PORT}`);
+  });
 });
+
+async function ensureQuestionSchema() {
+  // Drop strict birthdate-age consistency constraint that causes registration failures
+  try { await query('ALTER TABLE students DROP CONSTRAINT IF EXISTS chk_age_birth'); } catch (e) {}
+  await query(`
+    CREATE TABLE IF NOT EXISTS questions (
+      id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      student_id     UUID        NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+      exam_type      VARCHAR(3)  NOT NULL CHECK (exam_type IN ('TYT', 'AYT')),
+      track          VARCHAR(20) NOT NULL DEFAULT 'sayisal',
+      lesson         VARCHAR(100) NOT NULL,
+      topic_name     VARCHAR(255) NOT NULL,
+      question_no    INT,
+      question_text  TEXT        NOT NULL,
+      question_image_url TEXT,
+      correct_option CHAR(1)     NOT NULL CHECK (correct_option IN ('A','B','C','D','E')),
+      explanation    TEXT        NOT NULL DEFAULT '',
+      source_name    VARCHAR(255) NOT NULL DEFAULT '',
+      source_year    INT,
+      difficulty     SMALLINT    NOT NULL DEFAULT 3 CHECK (difficulty BETWEEN 1 AND 5),
+      created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+  await query('CREATE INDEX IF NOT EXISTS idx_questions_student ON questions (student_id)');
+  await query('CREATE INDEX IF NOT EXISTS idx_questions_topic ON questions (student_id, exam_type, lesson, topic_name)');
+  await query(`
+    CREATE TABLE IF NOT EXISTS question_options (
+      id               UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+      question_id      UUID    NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+      option_key       CHAR(1) NOT NULL CHECK (option_key IN ('A','B','C','D','E')),
+      option_text      TEXT    NOT NULL DEFAULT '',
+      option_image_url TEXT,
+      UNIQUE (question_id, option_key)
+    )
+  `);
+  await query('CREATE INDEX IF NOT EXISTS idx_question_options_question ON question_options (question_id)');
+  await query(`
+    CREATE TABLE IF NOT EXISTS student_answers (
+      id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      student_id      UUID        NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+      question_id     UUID        NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+      selected_option CHAR(1)     NOT NULL CHECK (selected_option IN ('A','B','C','D','E')),
+      is_correct      BOOLEAN     NOT NULL,
+      answered_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (student_id, question_id)
+    )
+  `);
+  await query('CREATE INDEX IF NOT EXISTS idx_student_answers_student ON student_answers (student_id)');
+  await query('CREATE INDEX IF NOT EXISTS idx_student_answers_question ON student_answers (question_id)');
+  await query(`
+    CREATE TABLE IF NOT EXISTS admin_question_imports (
+      id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      uploaded_by    UUID        REFERENCES students(id) ON DELETE SET NULL,
+      exam_type      VARCHAR(3)  NOT NULL CHECK (exam_type IN ('TYT', 'AYT')),
+      track          VARCHAR(20) NOT NULL DEFAULT 'sayisal',
+      source_name    VARCHAR(255) NOT NULL,
+      source_year    INT,
+      status         VARCHAR(20) NOT NULL DEFAULT 'completed',
+      raw_text       TEXT        NOT NULL DEFAULT '',
+      answer_key     JSONB       NOT NULL DEFAULT '{}'::jsonb,
+      imported_count INT         NOT NULL DEFAULT 0,
+      review_count   INT         NOT NULL DEFAULT 0,
+      created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+  await query('CREATE INDEX IF NOT EXISTS idx_admin_imports_created ON admin_question_imports (created_at DESC)');
+  await query(`
+    CREATE TABLE IF NOT EXISTS global_questions (
+      id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      import_id        UUID        NOT NULL REFERENCES admin_question_imports(id) ON DELETE CASCADE,
+      exam_type        VARCHAR(3)  NOT NULL CHECK (exam_type IN ('TYT', 'AYT')),
+      track            VARCHAR(20) NOT NULL DEFAULT 'sayisal',
+      lesson           VARCHAR(100) NOT NULL DEFAULT '',
+      topic_name       VARCHAR(255) NOT NULL DEFAULT '',
+      question_no      INT         NOT NULL,
+      question_text    TEXT        NOT NULL,
+      correct_option   CHAR(1)     CHECK (correct_option IN ('A','B','C','D','E')),
+      topic_confidence NUMERIC(4,3) NOT NULL DEFAULT 0,
+      source_name      VARCHAR(255) NOT NULL DEFAULT '',
+      source_year      INT,
+      needs_review     BOOLEAN     NOT NULL DEFAULT false,
+      created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (exam_type, source_name, source_year, question_no)
+    )
+  `);
+  await query('CREATE INDEX IF NOT EXISTS idx_global_questions_import ON global_questions (import_id)');
+  await query('CREATE INDEX IF NOT EXISTS idx_global_questions_topic ON global_questions (exam_type, lesson, topic_name)');
+  await query(`
+    CREATE TABLE IF NOT EXISTS global_question_options (
+      id          UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+      question_id UUID    NOT NULL REFERENCES global_questions(id) ON DELETE CASCADE,
+      option_key  CHAR(1) NOT NULL CHECK (option_key IN ('A','B','C','D','E')),
+      option_text TEXT    NOT NULL DEFAULT '',
+      UNIQUE (question_id, option_key)
+    )
+  `);
+  await query('CREATE INDEX IF NOT EXISTS idx_global_question_options_question ON global_question_options (question_id)');
+}

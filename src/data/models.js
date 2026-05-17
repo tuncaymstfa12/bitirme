@@ -1,6 +1,6 @@
 /**
  * Data Models for the Study Planning System
- * Defines entities: Exam, Topic, TimeSlot, StudySession, MockResult
+ * Defines entities: Exam, Topic, TimeSlot, StudySession, MockResult, Question
  */
 
 export function generateId() {
@@ -12,7 +12,7 @@ export function createExam({ name, date, color = null, id = null }) {
   return {
     id: id || generateId(),
     name: name.trim(),
-    date: new Date(date).toISOString().split('T')[0], // YYYY-MM-DD
+    date: String(date || '').split('T')[0] || new Date().toISOString().split('T')[0],
     color: color || generateExamColor(),
     createdAt: new Date().toISOString(),
   };
@@ -24,6 +24,9 @@ export function createTopic({
   weight = 5,
   selfAssessment = 3,
   estimatedMinutes = 60,
+  examType = 'TYT',
+  track = 'sayisal',
+  lesson = '',
   id = null,
 }) {
   return {
@@ -34,6 +37,9 @@ export function createTopic({
     selfAssessment: clamp(selfAssessment, 1, 5),
     estimatedMinutes: Math.max(30, estimatedMinutes),
     completedMinutes: 0,
+    examType,
+    track,
+    lesson,
     createdAt: new Date().toISOString(),
   };
 }
@@ -92,8 +98,59 @@ export function createMockResult({
     topicId,
     score: clamp(score, 0, maxScore),
     maxScore,
-    date: date || new Date().toISOString().split('T')[0],
+    date: date || String(new Date().toISOString().split('T')[0]),
     createdAt: new Date().toISOString(),
+  };
+}
+
+export function createQuestion({
+  examType = 'TYT',
+  track = 'sayisal',
+  lesson,
+  topicName,
+  questionNo = null,
+  questionText,
+  questionImageUrl = '',
+  options = [],
+  correctOption,
+  explanation = '',
+  sourceName = '',
+  sourceYear = null,
+  difficulty = 3,
+  id = null,
+}) {
+  return {
+    id: id || generateId(),
+    examType,
+    track,
+    lesson: String(lesson || '').trim(),
+    topicName: String(topicName || '').trim(),
+    questionNo: questionNo ? Number(questionNo) : null,
+    questionText: String(questionText || '').trim(),
+    questionImageUrl: String(questionImageUrl || '').trim(),
+    options: normalizeOptions(options),
+    correctOption: String(correctOption || '').toUpperCase(),
+    explanation: String(explanation || '').trim(),
+    sourceName: String(sourceName || '').trim(),
+    sourceYear: sourceYear ? Number(sourceYear) : null,
+    difficulty: clamp(Number(difficulty) || 3, 1, 5),
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export function createStudentAnswer({
+  questionId,
+  selectedOption,
+  isCorrect = false,
+  answeredAt = null,
+  id = null,
+}) {
+  return {
+    id: id || generateId(),
+    questionId,
+    selectedOption: String(selectedOption || '').toUpperCase(),
+    isCorrect: Boolean(isCorrect),
+    answeredAt: answeredAt || new Date().toISOString(),
   };
 }
 
@@ -101,6 +158,24 @@ export function createMockResult({
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function normalizeOptions(options) {
+  const byKey = new Map();
+  options.forEach(option => {
+    const key = String(option.optionKey || option.key || '').toUpperCase();
+    if (!['A', 'B', 'C', 'D', 'E'].includes(key)) return;
+    byKey.set(key, {
+      optionKey: key,
+      optionText: String(option.optionText || option.text || '').trim(),
+      optionImageUrl: String(option.optionImageUrl || '').trim(),
+    });
+  });
+  return ['A', 'B', 'C', 'D', 'E'].map(key => byKey.get(key) || {
+    optionKey: key,
+    optionText: '',
+    optionImageUrl: '',
+  });
 }
 
 const EXAM_COLORS = [

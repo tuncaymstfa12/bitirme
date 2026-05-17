@@ -8,6 +8,13 @@ import { rankTopics } from './priorityCalculator.js';
 import { generateSchedule, generateAvailableSlots } from './scheduler.js';
 import { createStudySession, generateId } from '../data/models.js';
 
+function formatLocalDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
+
 /**
  * Handle missed sessions and regenerate the schedule
  * @param {Array} missedSessionIds - IDs of sessions marked as missed
@@ -44,7 +51,7 @@ export function handleMissedSessions(
   // 2. Get today's date as the new start
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const todayStr = today.toISOString().split('T')[0];
+  const todayStr = formatLocalDate(today);
 
   // 3. Find the latest exam date
   const futureExams = exams.filter(e => new Date(e.date) >= today);
@@ -151,11 +158,11 @@ export function handleMissedSessions(
 export function fullReschedule(exams, topics, mockResults, availability, constraints, weights) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const todayStr = today.toISOString().split('T')[0];
+  const todayStr = formatLocalDate(today);
 
   const futureExams = exams.filter(e => new Date(e.date) >= today);
   if (futureExams.length === 0) {
-    return { sessions: [], warnings: ['No future exams to schedule.'] };
+    return { sessions: [], warnings: ['No future exams.'] };
   }
 
   const latestExamDate = futureExams.sort((a, b) => new Date(b.date) - new Date(a.date))[0].date;
