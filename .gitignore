@@ -1,73 +1,53 @@
 # ===========================
-# Node.js & Package Managers
+# Dependencies & Package Managers
 # ===========================
 node_modules/
+.pnpm-store/
+.yarn/
+.npm/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
-.pnpm-store/
-.yarn/
-.npm/
-package-lock.json
 
 # ===========================
-# Build & Output
+# Python / OCR Worker
+# ===========================
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ===========================
+# Build Outputs
 # ===========================
 dist/
 dist-ssr/
 build/
 out/
 .output/
-*.local
 .cache/
 .parcel-cache/
 .turbo/
+coverage/
+.nyc_output/
+*.lcov
 
 # ===========================
-# Exam Questions & Documents
+# Runtime Logs & Local Process Output
 # ===========================
-*.pdf
-*.txt
-!README.txt
-*.doc
-*.docx
-*.xls
-*.xlsx
-*.ppt
-*.pptx
-*.odt
-*.ods
-*.odp
-*.rtf
-*.csv
-*.epub
-
-# ===========================
-# Images (if not needed in repo)
-# ===========================
-# Uncomment below if you want to ignore images
-# *.png
-# *.jpg
-# *.jpeg
-# *.gif
-# *.bmp
-# *.svg
-# *.ico
-# *.webp
-
-# ===========================
-# Archives & Compressed Files
-# ===========================
-*.zip
-*.rar
-*.7z
-*.tar
-*.tar.gz
-*.tgz
-*.gz
-*.bz2
+logs/
+*.log
+*.log.*
+.run-logs/
+*.pid
+*.pid.lock
+*.seed
 
 # ===========================
 # Environment & Secrets
@@ -83,24 +63,61 @@ out/
 *.pfx
 
 # ===========================
-# Logs
+# Local Data, Uploads, and Generated Assets
 # ===========================
-logs/
-*.log
-*.log.*
+storage/tests/
+server/data/*.json
+!server/data/.gitkeep
+
+# Local extractor scratch / manual inspection folders
+tmp-*/
+tmp_*/
 
 # ===========================
-# OS Generated Files
+# Test Tooling Output
 # ===========================
-# macOS
+.jest/
+jest-results/
+test-results/
+playwright-report/
+
+# ===========================
+# Editor / IDE
+# ===========================
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.iml
+*.iws
+*.ipr
+*.sublime-project
+*.sublime-workspace
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.user
+*.vs/
+Session.vim
+.netrwhist
+tags
+*.sw?
+*.swo
+*.swn
+\#*\#
+.#*
+auto-save-list/
+
+# ===========================
+# OS Files
+# ===========================
 .DS_Store
 .AppleDouble
 .LSOverride
 ._*
 .Spotlight-V100
 .Trashes
-
-# Windows
 Thumbs.db
 Thumbs.db:encryptable
 ehthumbs.db
@@ -109,86 +126,36 @@ Desktop.ini
 $RECYCLE.BIN/
 *.stackdump
 [Dd]esktop.ini
-
-# Linux
-*~
 .directory
 .Trash-*
 
 # ===========================
-# Editor & IDE Files
+# Archives / Backups / Temp
 # ===========================
-# VS Code
-.vscode/*
-!.vscode/extensions.json
-!.vscode/settings.json
-
-# JetBrains (WebStorm, IntelliJ, etc.)
-.idea/
-*.iml
-*.iws
-*.ipr
-
-# Sublime Text
-*.sublime-project
-*.sublime-workspace
-
-# Vim / Neovim
-*.sw?
-*.swo
-*.swn
-*~
-Session.vim
-.netrwhist
-tags
-
-# Emacs
-*~
-\#*\#
-.#*
-auto-save-list/
-
-# Visual Studio
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.user
-*.vs/
-
-# ===========================
-# Testing & Coverage
-# ===========================
-coverage/
-.nyc_output/
-*.lcov
-.jest/
-jest-results/
-test-results/
-playwright-report/
-
-# ===========================
-# Miscellaneous
-# ===========================
+*.zip
+*.rar
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+*.bz2
 *.bak
 *.backup
 *.tmp
 *.temp
 *.orig
-*.pid
-*.seed
-*.pid.lock
+
+# ===========================
+# Tool Caches
+# ===========================
 .eslintcache
 .stylelintcache
 .prettier-cache
-
-# Vite specific
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
-# Local auth API data
-server/data/*.json
-!server/data/.gitkeep
-
-# Gemini AI agent
+# ===========================
+# Project-Specific Misc
+# ===========================
 .gemini/
