@@ -291,7 +291,53 @@ CREATE TABLE global_question_options (
 CREATE INDEX idx_global_question_options_question ON global_question_options (question_id);
 
 -- ============================================================
--- 11. STUDENT_SETTINGS
+-- 11. BOOKLET IMPORT MVP
+-- ============================================================
+CREATE TABLE booklet_tests (
+  id           UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+  title        VARCHAR(255) NOT NULL,
+  exam_type    VARCHAR(20)  NOT NULL DEFAULT '',
+  booklet_type VARCHAR(50)  NOT NULL DEFAULT '',
+  pdf_path     TEXT         NOT NULL DEFAULT '',
+  review_path  TEXT         NOT NULL DEFAULT '',
+  status       VARCHAR(20)  NOT NULL DEFAULT 'draft',
+  created_at   TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_booklet_tests_created ON booklet_tests (created_at DESC);
+
+CREATE TABLE booklet_sections (
+  id            UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+  test_id       UUID         NOT NULL REFERENCES booklet_tests(id) ON DELETE CASCADE,
+  section_code  VARCHAR(80)  NOT NULL,
+  section_name  VARCHAR(255) NOT NULL,
+  section_order INT          NOT NULL DEFAULT 1,
+  start_page    INT,
+  end_page      INT,
+  created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  UNIQUE (test_id, section_code)
+);
+
+CREATE INDEX idx_booklet_sections_test ON booklet_sections (test_id, section_order);
+
+CREATE TABLE booklet_questions (
+  id                      UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  test_id                 UUID        NOT NULL REFERENCES booklet_tests(id) ON DELETE CASCADE,
+  section_id              UUID        NOT NULL REFERENCES booklet_sections(id) ON DELETE CASCADE,
+  section_question_number INT         NOT NULL,
+  global_question_order   INT         NOT NULL,
+  image_path              TEXT        NOT NULL,
+  correct_answer          CHAR(1)     CHECK (correct_answer IN ('A','B','C','D','E')),
+  choices                 JSONB       NOT NULL DEFAULT '["A","B","C","D","E"]'::jsonb,
+  created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (test_id, section_id, section_question_number),
+  UNIQUE (test_id, global_question_order)
+);
+
+CREATE INDEX idx_booklet_questions_test ON booklet_questions (test_id, global_question_order);
+
+-- ============================================================
+-- 12. STUDENT_SETTINGS
 -- ============================================================
 CREATE TABLE student_settings (
   student_id         UUID  PRIMARY KEY REFERENCES students(id) ON DELETE CASCADE,
@@ -317,7 +363,7 @@ CREATE TABLE student_settings (
 );
 
 -- ============================================================
--- 12. AUTH_SESSIONS
+-- 13. AUTH_SESSIONS
 -- ============================================================
 CREATE TABLE auth_sessions (
   id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),

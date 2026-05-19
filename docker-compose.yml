@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: Tuncay1903
       POSTGRES_DB: bitime
     ports:
-      - "9100:5432"
+      - "${DB_HOST_PORT:-9110}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql

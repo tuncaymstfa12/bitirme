@@ -135,6 +135,46 @@ export async function importAdminQuestionPdf(payload) {
   return request('POST', '/admin/question-imports', payload);
 }
 
+export async function getBookletTests() {
+  return request('GET', '/admin/booklet-tests');
+}
+
+export async function createBookletTest(payload) {
+  return request('POST', '/admin/booklet-tests', payload);
+}
+
+export async function uploadBookletTestPdf(testId, payload) {
+  return request('POST', '/admin/booklet-tests/' + testId + '/upload', payload);
+}
+
+export async function getBookletReview(testId) {
+  return request('GET', '/admin/booklet-tests/' + testId + '/review');
+}
+
+export async function updateBookletReviewQuestion(testId, tempId, payload) {
+  return request('PATCH', '/admin/booklet-tests/' + testId + '/review/questions/' + tempId, payload);
+}
+
+export async function createBookletReviewQuestion(testId, payload) {
+  return request('POST', '/admin/booklet-tests/' + testId + '/review/questions', payload);
+}
+
+export async function deleteBookletReviewQuestion(testId, tempId) {
+  return request('DELETE', '/admin/booklet-tests/' + testId + '/review/questions/' + tempId);
+}
+
+export async function applyBookletAnswerKey(testId, answerKeyText) {
+  return request('POST', '/admin/booklet-tests/' + testId + '/answer-key', { answerKeyText });
+}
+
+export async function finalizeBookletTest(testId) {
+  return request('POST', '/admin/booklet-tests/' + testId + '/finalize');
+}
+
+export async function getFinalBookletQuestions(testId) {
+  return request('GET', '/admin/booklet-tests/' + testId + '/questions');
+}
+
 export async function getSettings() {
   return request('GET', '/settings');
 }

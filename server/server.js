@@ -6,6 +6,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { query, getClient } from './db.js';
+import { parseAnswerKeyText } from './bookletImport/answerKeyParser.js';
+import { runBookletExtractor, regenerateBookletCrop } from './bookletImport/pythonBridge.js';
+import {
+  ensureTestStorage,
+  getOriginalPdfPath,
+  getReviewPath,
+  getTestDir,
+  readReview,
+  toAssetUrl,
+  writeReview,
+} from './bookletImport/reviewStore.js';
 
 const scrypt = promisify(scryptCallback);
 const execFile = promisify(execFileCallback);
@@ -38,6 +49,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && path === '/api/auth/login') {
       const body = await readJsonBody(req);
       return await handleLogin(body, res);
+    }
+
+    const bookletAssetMatch = path.match(/^\/api\/admin\/booklet-tests\/([a-f0-9-]+)\/assets\/(.+)$/);
+    if (bookletAssetMatch && req.method === 'GET') {
+      return await getBookletAsset(bookletAssetMatch[1], bookletAssetMatch[2], res);
     }
 
     // --- Protected Routes (token required) ---
@@ -134,6 +150,54 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && path === '/api/admin/question-imports') {
       return await importAdminQuestionPdf(studentId, req, res);
+    }
+    if (req.method === 'GET' && path === '/api/admin/booklet-tests') {
+      return await getBookletTests(res);
+    }
+    if (req.method === 'POST' && path === '/api/admin/booklet-tests') {
+      return await createBookletTest(req, res);
+    }
+
+    const bookletTestMatch = path.match(/^\/api\/admin\/booklet-tests\/([a-f0-9-]+)$/);
+    if (bookletTestMatch && req.method === 'GET') {
+      return await getBookletTest(bookletTestMatch[1], res);
+    }
+
+    const bookletUploadMatch = path.match(/^\/api\/admin\/booklet-tests\/([a-f0-9-]+)\/upload$/);
+    if (bookletUploadMatch && req.method === 'POST') {
+      return await uploadBookletTestPdf(bookletUploadMatch[1], req, res);
+    }
+
+    const bookletReviewMatch = path.match(/^\/api\/admin\/booklet-tests\/([a-f0-9-]+)\/review$/);
+    if (bookletReviewMatch && req.method === 'GET') {
+      return await getBookletReview(bookletReviewMatch[1], res);
+    }
+
+    const bookletReviewCreateMatch = path.match(/^\/api\/admin\/booklet-tests\/([a-f0-9-]+)\/review\/questions$/);
+    if (bookletReviewCreateMatch && req.method === 'POST') {
+      return await createBookletReviewQuestion(bookletReviewCreateMatch[1], req, res);
+    }
+
+    const bookletReviewQuestionMatch = path.match(/^\/api\/admin\/booklet-tests\/([a-f0-9-]+)\/review\/questions\/([^/]+)$/);
+    if (bookletReviewQuestionMatch) {
+      const [, testId, tempId] = bookletReviewQuestionMatch;
+      if (req.method === 'PATCH') return await updateBookletReviewQuestion(testId, tempId, req, res);
+      if (req.method === 'DELETE') return await deleteBookletReviewQuestion(testId, tempId, res);
+    }
+
+    const bookletAnswerKeyMatch = path.match(/^\/api\/admin\/booklet-tests\/([a-f0-9-]+)\/answer-key$/);
+    if (bookletAnswerKeyMatch && req.method === 'POST') {
+      return await applyBookletAnswerKey(bookletAnswerKeyMatch[1], req, res);
+    }
+
+    const bookletFinalizeMatch = path.match(/^\/api\/admin\/booklet-tests\/([a-f0-9-]+)\/finalize$/);
+    if (bookletFinalizeMatch && req.method === 'POST') {
+      return await finalizeBookletTest(bookletFinalizeMatch[1], res);
+    }
+
+    const bookletQuestionsMatch = path.match(/^\/api\/admin\/booklet-tests\/([a-f0-9-]+)\/questions$/);
+    if (bookletQuestionsMatch && req.method === 'GET') {
+      return await getBookletQuestions(bookletQuestionsMatch[1], res);
     }
 
     // Settings
@@ -901,6 +965,499 @@ async function importAdminQuestionPdf(studentId, req, res) {
   }
 }
 
+async function getBookletTests(res) {
+  const { rows } = await query(
+    `SELECT id, title, exam_type, booklet_type, status, created_at
+     FROM booklet_tests
+     ORDER BY created_at DESC
+     LIMIT 50`
+  );
+  return sendJson(res, 200, rows.map(mapBookletTest));
+}
+
+async function getBookletTest(testId, res) {
+  const { rows } = await query(
+    `SELECT id, title, exam_type, booklet_type, status, created_at
+     FROM booklet_tests
+     WHERE id = $1`,
+    [testId]
+  );
+  if (!rows.length) return sendJson(res, 404, { error: 'Test bulunamadı.' });
+  return sendJson(res, 200, mapBookletTest(rows[0]));
+}
+
+async function createBookletTest(req, res) {
+  const body = await readJsonBody(req);
+  const title = String(body.title || '').trim();
+  const examType = String(body.examType || '').trim();
+  const bookletType = String(body.bookletType || '').trim();
+
+  if (!title) return sendJson(res, 400, { error: 'Test başlığı gereklidir.' });
+
+  const { rows } = await query(
+    `INSERT INTO booklet_tests (title, exam_type, booklet_type, status)
+     VALUES ($1,$2,$3,'draft')
+     RETURNING id, title, exam_type, booklet_type, status, created_at`,
+    [title, examType, bookletType]
+  );
+
+  const test = mapBookletTest(rows[0]);
+  await ensureTestStorage(test.id);
+  return sendJson(res, 201, test);
+}
+
+async function uploadBookletTestPdf(testId, req, res) {
+  const { rows } = await query('SELECT * FROM booklet_tests WHERE id = $1', [testId]);
+  if (!rows.length) return sendJson(res, 404, { error: 'Test bulunamadı.' });
+
+  const body = await readJsonBody(req);
+  const pdfFileName = String(body.pdfFileName || '').trim();
+  const pdfFileBase64 = String(body.pdfFileBase64 || '');
+  if (!pdfFileName || !pdfFileBase64) {
+    return sendJson(res, 400, { error: 'PDF dosyası gereklidir.' });
+  }
+
+  await ensureTestStorage(testId);
+  const pdfBuffer = Buffer.from(pdfFileBase64.replace(/^data:[^,]+,/, ''), 'base64');
+  if (!pdfBuffer.length) return sendJson(res, 400, { error: 'PDF dosyası okunamadı.' });
+
+  const pdfPath = getOriginalPdfPath(testId);
+  await writeFile(pdfPath, pdfBuffer);
+  await query(
+    'UPDATE booklet_tests SET pdf_path = $1, status = $2 WHERE id = $3',
+    [pdfPath, 'processing', testId]
+  );
+
+  try {
+    const review = await runBookletExtractor({
+      testId,
+      pdfPath,
+      testDir: getTestDir(testId),
+      title: rows[0].title,
+      examType: rows[0].exam_type,
+      bookletType: rows[0].booklet_type,
+    });
+
+    await writeReview(testId, review);
+    await query(
+      'UPDATE booklet_tests SET review_path = $1, status = $2 WHERE id = $3',
+      [getReviewPath(testId), 'review', testId]
+    );
+    return sendJson(res, 200, buildReviewResponse(testId, review));
+  } catch (error) {
+    await query('UPDATE booklet_tests SET status = $1 WHERE id = $2', ['failed', testId]);
+    throw httpError(500, 'PDF işlendi fakat extraction başarısız oldu: ' + error.message);
+  }
+}
+
+async function getBookletReview(testId, res) {
+  await ensureBookletTestExists(testId);
+  let review;
+  try {
+    review = await readReview(testId);
+  } catch {
+    return sendJson(res, 404, { error: 'Bu test icin henuz review dosyasi olusturulmadi.' });
+  }
+  return sendJson(res, 200, buildReviewResponse(testId, review));
+}
+
+async function updateBookletReviewQuestion(testId, tempId, req, res) {
+  await ensureBookletTestExists(testId);
+  const body = await readJsonBody(req);
+  const review = await readReview(testId);
+  const question = review.detections.find(item => item.tempId === tempId);
+  if (!question) return sendJson(res, 404, { error: 'Geçici soru bulunamadı.' });
+
+  if (body.sectionCode !== undefined) {
+    const section = findReviewSection(review, body.sectionCode);
+    if (section) {
+      question.sectionCode = section.sectionCode;
+      question.sectionName = section.sectionName;
+      question.sectionOrder = section.sectionOrder;
+    }
+  }
+  if (body.sectionQuestionNumber !== undefined || body.questionNumber !== undefined) {
+    const rawNumber = body.sectionQuestionNumber !== undefined ? body.sectionQuestionNumber : body.questionNumber;
+    question.sectionQuestionNumber = rawNumber ? Number(rawNumber) : null;
+  }
+  if (body.globalQuestionOrder !== undefined) question.globalQuestionOrder = body.globalQuestionOrder ? Number(body.globalQuestionOrder) : null;
+  if (body.correctAnswer !== undefined) {
+    const answer = String(body.correctAnswer || '').toUpperCase();
+    question.correctAnswer = ['A', 'B', 'C', 'D', 'E'].includes(answer) ? answer : '';
+  }
+  if (body.deleted !== undefined) {
+    question.deleted = Boolean(body.deleted);
+  }
+
+  if (body.crop) {
+    question.crop = normalizeCrop(body.crop);
+    const rerendered = await rerenderReviewCrop(testId, review, question);
+    question.imagePath = rerendered.imagePath;
+  }
+
+  await writeReview(testId, review);
+  return sendJson(res, 200, buildReviewResponse(testId, review));
+}
+
+async function createBookletReviewQuestion(testId, req, res) {
+  await ensureBookletTestExists(testId);
+  const body = await readJsonBody(req);
+  const review = await readReview(testId);
+  const pageNumber = Number(body.pageNumber || 0);
+  const crop = normalizeCrop(body.crop || {});
+  if (!pageNumber || pageNumber < 1 || pageNumber > review.pages.length) {
+    return sendJson(res, 400, { error: 'Geçerli sayfa numarası seçiniz.' });
+  }
+
+  const fallbackSection = findReviewSection(review, body.sectionCode) || review.sections?.[0] || {
+    sectionCode: 'main',
+    sectionName: 'Main',
+    sectionOrder: 1,
+  };
+
+  const question = {
+    tempId: randomUUID(),
+    sectionCode: fallbackSection.sectionCode,
+    sectionName: fallbackSection.sectionName,
+    sectionOrder: fallbackSection.sectionOrder,
+    sectionQuestionNumber: body.sectionQuestionNumber ? Number(body.sectionQuestionNumber) : (body.questionNumber ? Number(body.questionNumber) : null),
+    globalQuestionOrder: body.globalQuestionOrder ? Number(body.globalQuestionOrder) : inferNextGlobalQuestionOrder(review),
+    pageNumber,
+    columnIndex: 0,
+    detectedText: 'Manual',
+    confidenceScore: 1,
+    correctAnswer: '',
+    choices: ['A', 'B', 'C', 'D', 'E'],
+    imagePath: '',
+    deleted: false,
+    manual: true,
+    crop,
+  };
+  const rerendered = await rerenderReviewCrop(testId, review, question);
+  question.imagePath = rerendered.imagePath;
+  review.detections.push(question);
+  review.detections.sort(sortReviewQuestions);
+  await writeReview(testId, review);
+  return sendJson(res, 201, buildReviewResponse(testId, review));
+}
+
+async function deleteBookletReviewQuestion(testId, tempId, res) {
+  await ensureBookletTestExists(testId);
+  const review = await readReview(testId);
+  const question = review.detections.find(item => item.tempId === tempId);
+  if (!question) return sendJson(res, 404, { error: 'Geçici soru bulunamadı.' });
+  question.deleted = true;
+  await writeReview(testId, review);
+  return sendJson(res, 200, buildReviewResponse(testId, review));
+}
+
+async function applyBookletAnswerKey(testId, req, res) {
+  await ensureBookletTestExists(testId);
+  const review = await readReview(testId);
+  const body = await readJsonBody(req);
+  const answerKey = (body.answerKeyText || '').trim()
+    ? parseStructuredAnswerKeyText(body.answerKeyText || '', review.sections || [])
+    : (review.answerKey || {});
+
+  let matchedCount = 0;
+  for (const question of review.detections) {
+    if (question.deleted || !question.sectionQuestionNumber) continue;
+    const matched = lookupAnswerForQuestion(answerKey, question);
+    if (matched) {
+      question.correctAnswer = matched;
+      matchedCount += 1;
+    }
+  }
+
+  await writeReview(testId, review);
+  return sendJson(res, 200, {
+    matchedCount,
+    answerCount: countStructuredAnswerEntries(answerKey),
+    review: buildReviewResponse(testId, review),
+  });
+}
+
+async function finalizeBookletTest(testId, res) {
+  await ensureBookletTestExists(testId);
+  const review = await readReview(testId);
+  const active = review.detections
+    .filter(item => !item.deleted && item.sectionQuestionNumber)
+    .sort(sortReviewQuestions)
+    .map((question, index) => ({
+      ...question,
+      globalQuestionOrder: question.globalQuestionOrder || (index + 1),
+    }));
+  const duplicates = findDuplicateSectionQuestions(active);
+  if (duplicates.length) {
+    return sendJson(res, 400, { error: 'Aynı bölüm içinde tekrar eden soru numaraları var: ' + duplicates.join(', ') });
+  }
+
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM booklet_sections WHERE test_id = $1', [testId]);
+    await client.query('DELETE FROM booklet_questions WHERE test_id = $1', [testId]);
+    const sectionIdByCode = new Map();
+    for (const section of buildPersistedSections(review, active)) {
+      const { rows } = await client.query(
+        `INSERT INTO booklet_sections (test_id, section_code, section_name, section_order, start_page, end_page)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         RETURNING id`,
+        [testId, section.sectionCode, section.sectionName, section.sectionOrder, section.startPage || null, section.endPage || null]
+      );
+      sectionIdByCode.set(section.sectionCode, rows[0].id);
+    }
+    for (const question of active) {
+      await client.query(
+        `INSERT INTO booklet_questions (test_id, section_id, section_question_number, global_question_order, image_path, correct_answer, choices)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [
+          testId,
+          sectionIdByCode.get(question.sectionCode),
+          question.sectionQuestionNumber,
+          question.globalQuestionOrder,
+          toAssetUrl(testId, question.imagePath),
+          question.correctAnswer || null,
+          JSON.stringify(question.choices || ['A', 'B', 'C', 'D', 'E']),
+        ]
+      );
+    }
+    await client.query('UPDATE booklet_tests SET status = $1 WHERE id = $2', ['finalized', testId]);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  return sendJson(res, 200, { success: true, savedCount: active.length });
+}
+
+async function getBookletQuestions(testId, res) {
+  await ensureBookletTestExists(testId);
+  const { rows } = await query(
+    `SELECT q.id, q.test_id, q.section_id, s.section_code, s.section_name, s.section_order,
+            q.section_question_number, q.global_question_order, q.image_path, q.correct_answer, q.choices, q.created_at
+     FROM booklet_questions q
+     JOIN booklet_sections s ON s.id = q.section_id
+     WHERE q.test_id = $1
+     ORDER BY q.global_question_order`,
+    [testId]
+  );
+  return sendJson(res, 200, rows.map(mapBookletQuestion));
+}
+
+async function getBookletAsset(testId, relativePath, res) {
+  await ensureBookletTestExists(testId);
+  const baseDir = path.resolve(getTestDir(testId));
+  const requested = path.normalize(String(relativePath || '')).replace(/^(\.\.(\/|\\|$))+/, '');
+  const filePath = path.resolve(baseDir, requested);
+  if (filePath !== baseDir && !filePath.startsWith(baseDir + path.sep)) {
+    return sendJson(res, 400, { error: 'Geçersiz dosya yolu.' });
+  }
+
+  let content;
+  try {
+    content = await readFile(filePath);
+  } catch {
+    return sendJson(res, 404, { error: 'Dosya bulunamadi.' });
+  }
+  const contentType = filePath.endsWith('.png')
+    ? 'image/png'
+    : filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')
+      ? 'image/jpeg'
+      : 'application/octet-stream';
+
+  res.writeHead(200, { 'Content-Type': contentType });
+  res.end(content);
+}
+
+async function ensureBookletTestExists(testId) {
+  const { rows } = await query('SELECT id FROM booklet_tests WHERE id = $1', [testId]);
+  if (!rows.length) throw httpError(404, 'Test bulunamadı.');
+}
+
+async function rerenderReviewCrop(testId, review, question) {
+  const outputRelativePath = question.imagePath || ('crops/manual-' + question.tempId.slice(0, 8) + '.png');
+  return regenerateBookletCrop({
+    pdfPath: getOriginalPdfPath(testId),
+    testDir: getTestDir(testId),
+    pageNumber: question.pageNumber,
+    crop: question.crop,
+    outputRelativePath,
+  });
+}
+
+function buildReviewResponse(testId, review) {
+  return {
+    ...review,
+    sections: (review.sections || []).map(section => ({ ...section })),
+    pages: (review.pages || []).map(page => ({
+      ...page,
+      assetUrl: toAssetUrl(testId, page.imagePath),
+    })),
+    detections: (review.detections || []).map(question => ({
+      ...question,
+      questionNumber: question.sectionQuestionNumber ?? null,
+      assetUrl: question.imagePath ? toAssetUrl(testId, question.imagePath) : '',
+    })),
+  };
+}
+
+function normalizeCrop(crop) {
+  return {
+    x: Math.max(0, Number(crop.x || 0)),
+    y: Math.max(0, Number(crop.y || 0)),
+    width: Math.max(1, Number(crop.width || 1)),
+    height: Math.max(1, Number(crop.height || 1)),
+  };
+}
+
+function sortReviewQuestions(left, right) {
+  return ((left.sectionOrder || 1) - (right.sectionOrder || 1))
+    || (left.pageNumber - right.pageNumber)
+    || (left.columnIndex - right.columnIndex)
+    || (left.crop.y - right.crop.y)
+    || ((left.sectionQuestionNumber || 9999) - (right.sectionQuestionNumber || 9999))
+    || ((left.globalQuestionOrder || 9999) - (right.globalQuestionOrder || 9999));
+}
+
+function findDuplicateSectionQuestions(questions) {
+  const counts = new Map();
+  for (const question of questions) {
+    const key = String(question.sectionCode || 'main') + ':' + String(question.sectionQuestionNumber);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return [...counts.entries()].filter(([, count]) => count > 1).map(([key]) => key);
+}
+
+function inferNextGlobalQuestionOrder(review) {
+  const values = (review.detections || []).map(item => Number(item.globalQuestionOrder || 0));
+  return Math.max(0, ...values) + 1;
+}
+
+function findReviewSection(review, sectionCode) {
+  const normalized = normalizeSectionAlias(sectionCode);
+  if (!normalized) return null;
+  return (review.sections || []).find(section => normalizeSectionAlias(section.sectionCode) === normalized) || null;
+}
+
+function buildPersistedSections(review, activeQuestions) {
+  const sections = new Map();
+  for (const section of review.sections || []) {
+    sections.set(section.sectionCode, {
+      sectionCode: section.sectionCode,
+      sectionName: section.sectionName,
+      sectionOrder: section.sectionOrder || 1,
+      startPage: section.startPage || null,
+      endPage: section.endPage || null,
+    });
+  }
+  for (const question of activeQuestions) {
+    if (!sections.has(question.sectionCode)) {
+      sections.set(question.sectionCode, {
+        sectionCode: question.sectionCode || 'main',
+        sectionName: question.sectionName || 'Main',
+        sectionOrder: question.sectionOrder || 1,
+        startPage: question.pageNumber || null,
+        endPage: question.pageNumber || null,
+      });
+      continue;
+    }
+    const section = sections.get(question.sectionCode);
+    section.startPage = section.startPage ? Math.min(section.startPage, question.pageNumber) : question.pageNumber;
+    section.endPage = section.endPage ? Math.max(section.endPage, question.pageNumber) : question.pageNumber;
+  }
+  return [...sections.values()].sort((left, right) => left.sectionOrder - right.sectionOrder);
+}
+
+function parseStructuredAnswerKeyText(rawText, sections) {
+  const normalized = String(rawText || '').replace(/\r/g, '\n');
+  const answerKey = {};
+  const sectionAliases = buildSectionAliasMap(sections);
+  const sectionedPattern = /^(.*?)\s+(\d{1,3})\s*[:.\-)]\s*([A-E])\s*$/i;
+  const flatPattern = /^(\d{1,3})\s*[:.\-)]\s*([A-E])\s*$/i;
+
+  for (const rawLine of normalized.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const sectioned = line.match(sectionedPattern);
+    if (sectioned) {
+      const section = matchSectionAlias(sectioned[1], sectionAliases);
+      if (section) {
+        if (!answerKey[section.sectionCode]) answerKey[section.sectionCode] = {};
+        answerKey[section.sectionCode][String(Number(sectioned[2]))] = sectioned[3].toUpperCase();
+        continue;
+      }
+    }
+
+    const flat = line.match(flatPattern);
+    if (flat) {
+      if ((sections || []).length === 1) {
+        const only = sections[0];
+        if (!answerKey[only.sectionCode]) answerKey[only.sectionCode] = {};
+        answerKey[only.sectionCode][String(Number(flat[1]))] = flat[2].toUpperCase();
+      } else {
+        if (!answerKey.__global__) answerKey.__global__ = {};
+        answerKey.__global__[String(Number(flat[1]))] = flat[2].toUpperCase();
+      }
+    }
+  }
+
+  return answerKey;
+}
+
+function buildSectionAliasMap(sections) {
+  return (sections || []).map(section => ({
+    ...section,
+    aliases: [
+      section.sectionCode,
+      section.sectionName,
+      String(section.sectionName || '').replace(/testi|testı|bilimleri|bilimler/gi, '').trim(),
+    ].map(normalizeSectionAlias).filter(Boolean),
+  }));
+}
+
+function matchSectionAlias(value, sectionAliases) {
+  const normalized = normalizeSectionAlias(value);
+  return sectionAliases.find(section => section.aliases.includes(normalized)) || null;
+}
+
+function normalizeSectionAlias(value) {
+  return String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replaceAll('ı', 'i')
+    .replaceAll('ğ', 'g')
+    .replaceAll('ü', 'u')
+    .replaceAll('ş', 's')
+    .replaceAll('ö', 'o')
+    .replaceAll('ç', 'c')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function lookupAnswerForQuestion(answerKey, question) {
+  const sectionAnswers = answerKey[question.sectionCode];
+  if (sectionAnswers && sectionAnswers[String(question.sectionQuestionNumber)]) {
+    return sectionAnswers[String(question.sectionQuestionNumber)];
+  }
+  if (answerKey.__global__ && answerKey.__global__[String(question.globalQuestionOrder)]) {
+    return answerKey.__global__[String(question.globalQuestionOrder)];
+  }
+  return '';
+}
+
+function countStructuredAnswerEntries(answerKey) {
+  return Object.values(answerKey || {}).reduce((total, value) => {
+    if (value && typeof value === 'object') return total + Object.keys(value).length;
+    return total;
+  }, 0);
+}
+
 async function extractTextFromUploadedFile(fileName, fileBase64) {
   const data = Buffer.from(String(fileBase64 || '').replace(/^data:[^,]+,/, ''), 'base64');
   if (!data.length) throw httpError(400, 'Dosya okunamadı.');
@@ -1146,6 +1703,8 @@ function validateRegistration(body) {
 
 let lastCleanup = 0;
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+const STARTUP_RETRY_MS = 1500;
+const STARTUP_MAX_ATTEMPTS = 40;
 
 async function getSession(req) {
   const token = extractBearerToken(req);
@@ -1278,6 +1837,34 @@ function mapAdminImport(row) {
   };
 }
 
+function mapBookletTest(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    examType: row.exam_type,
+    bookletType: row.booklet_type,
+    status: row.status,
+    createdAt: row.created_at,
+  };
+}
+
+function mapBookletQuestion(row) {
+  return {
+    id: row.id,
+    testId: row.test_id,
+    sectionId: row.section_id,
+    sectionCode: row.section_code || '',
+    sectionName: row.section_name || '',
+    sectionOrder: row.section_order || 1,
+    sectionQuestionNumber: row.section_question_number,
+    globalQuestionOrder: row.global_question_order,
+    imagePath: row.image_path,
+    correctAnswer: row.correct_answer || '',
+    choices: Array.isArray(row.choices) ? row.choices : ['A', 'B', 'C', 'D', 'E'],
+    createdAt: row.created_at,
+  };
+}
+
 function mapSettings(row) {
   return {
     weights: row.weights || { urgency: 0.35, topicWeight: 0.25, weakness: 0.25, performance: 0.15 },
@@ -1293,7 +1880,7 @@ function mapSettings(row) {
 
 function setCorsHeaders(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 }
 
@@ -1313,13 +1900,36 @@ function httpError(statusCode, message) {
 // STARTUP
 // ============================================================
 
-ensureQuestionSchema().catch(error => {
-  console.error('Question schema migration failed:', error.message);
-}).finally(() => {
-  server.listen(PORT, () => {
-    console.log(`API server listening on http://localhost:${PORT}`);
-  });
-});
+startServer();
+
+async function startServer() {
+  try {
+    await ensureQuestionSchemaWithRetry();
+    server.listen(PORT, () => {
+      console.log(`API server listening on http://localhost:${PORT}`);
+    });
+  } catch (error) {
+    console.error('Question schema migration failed:', error.message);
+    process.exit(1);
+  }
+}
+
+async function ensureQuestionSchemaWithRetry() {
+  let lastError = null;
+  for (let attempt = 1; attempt <= STARTUP_MAX_ATTEMPTS; attempt++) {
+    try {
+      await ensureQuestionSchema();
+      return;
+    } catch (error) {
+      lastError = error;
+      console.error(`Schema init attempt ${attempt}/${STARTUP_MAX_ATTEMPTS} failed: ${error.message}`);
+      if (attempt < STARTUP_MAX_ATTEMPTS) {
+        await new Promise(resolve => setTimeout(resolve, STARTUP_RETRY_MS));
+      }
+    }
+  }
+  throw lastError || new Error('Unknown schema init failure');
+}
 
 async function ensureQuestionSchema() {
   // Drop strict birthdate-age consistency constraint that causes registration failures
@@ -1417,4 +2027,52 @@ async function ensureQuestionSchema() {
     )
   `);
   await query('CREATE INDEX IF NOT EXISTS idx_global_question_options_question ON global_question_options (question_id)');
+  await query(`
+    CREATE TABLE IF NOT EXISTS booklet_tests (
+      id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      title        VARCHAR(255) NOT NULL,
+      exam_type    VARCHAR(20) NOT NULL DEFAULT '',
+      booklet_type VARCHAR(50) NOT NULL DEFAULT '',
+      pdf_path     TEXT        NOT NULL DEFAULT '',
+      review_path  TEXT        NOT NULL DEFAULT '',
+      status       VARCHAR(20) NOT NULL DEFAULT 'draft',
+      created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+  await query('CREATE INDEX IF NOT EXISTS idx_booklet_tests_created ON booklet_tests (created_at DESC)');
+  await query(`
+    CREATE TABLE IF NOT EXISTS booklet_sections (
+      id            UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+      test_id       UUID         NOT NULL REFERENCES booklet_tests(id) ON DELETE CASCADE,
+      section_code  VARCHAR(80)  NOT NULL,
+      section_name  VARCHAR(255) NOT NULL,
+      section_order INT          NOT NULL DEFAULT 1,
+      start_page    INT,
+      end_page      INT,
+      created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
+      UNIQUE (test_id, section_code)
+    )
+  `);
+  await query('CREATE INDEX IF NOT EXISTS idx_booklet_sections_test ON booklet_sections (test_id, section_order)');
+  await query(`
+    CREATE TABLE IF NOT EXISTS booklet_questions (
+      id                      UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      test_id                 UUID        NOT NULL REFERENCES booklet_tests(id) ON DELETE CASCADE,
+      section_id              UUID        REFERENCES booklet_sections(id) ON DELETE CASCADE,
+      section_question_number INT,
+      global_question_order   INT,
+      question_number         INT,
+      image_path              TEXT        NOT NULL,
+      correct_answer          CHAR(1)     CHECK (correct_answer IN ('A','B','C','D','E')),
+      choices                 JSONB       NOT NULL DEFAULT '["A","B","C","D","E"]'::jsonb,
+      created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+  await query('ALTER TABLE booklet_questions ADD COLUMN IF NOT EXISTS section_id UUID REFERENCES booklet_sections(id) ON DELETE CASCADE');
+  await query('ALTER TABLE booklet_questions ADD COLUMN IF NOT EXISTS section_question_number INT');
+  await query('ALTER TABLE booklet_questions ADD COLUMN IF NOT EXISTS global_question_order INT');
+  try { await query('ALTER TABLE booklet_questions DROP CONSTRAINT IF EXISTS booklet_questions_test_id_question_number_key'); } catch {}
+  await query('CREATE INDEX IF NOT EXISTS idx_booklet_questions_test ON booklet_questions (test_id, global_question_order)');
+  await query('CREATE UNIQUE INDEX IF NOT EXISTS idx_booklet_questions_section_unique ON booklet_questions (test_id, section_id, section_question_number) WHERE section_id IS NOT NULL AND section_question_number IS NOT NULL');
+  await query('CREATE UNIQUE INDEX IF NOT EXISTS idx_booklet_questions_global_unique ON booklet_questions (test_id, global_question_order) WHERE global_question_order IS NOT NULL');
 }
