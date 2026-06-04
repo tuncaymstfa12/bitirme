@@ -3,6 +3,7 @@ import { createQuestion } from '../data/models.js';
 import { extractQuestionsWithOcr } from '../api/dataApi.js';
 import { getLessonsForTrack, getTopicsForLesson } from '../data/curriculum.js';
 import { showModal, closeModal, showToast } from './components.js';
+import { buildWeakRows } from '../engine/topicAnalyzer.js';
 
 const OPTION_KEYS = ['A', 'B', 'C', 'D', 'E'];
 
@@ -18,6 +19,7 @@ export function renderQuestionBank(container) {
     '<div class="page-header"><h2>Soru Bankası</h2><p>TYT/AYT sorularını konu, şık ve doğru cevap bilgisiyle kaydedin; çözümleri konu eksiklerine dönüştürün.</p></div>',
     '<div style="display:flex;gap:var(--space-sm);margin-bottom:var(--space-xl);flex-wrap:wrap;">',
     '<button class="btn btn-primary btn-lg" id="add-question-btn">+ Soru Ekle</button>',
+    questions.length ? '<button class="btn btn-secondary btn-lg" id="auto-tag-questions-btn">Gemini ile Etiketle</button>' : '',
     '</div>',
     '<div class="stats-grid" style="margin-bottom:var(--space-xl);">',
     statCard('Toplam Soru', questions.length),
@@ -106,6 +108,28 @@ function bindQuestionEvents(container) {
   if (addBtn) addBtn.addEventListener('click', add);
   const emptyBtn = container.querySelector('#add-question-empty-btn');
   if (emptyBtn) emptyBtn.addEventListener('click', add);
+  const autoTagBtn = container.querySelector('#auto-tag-questions-btn');
+  if (autoTagBtn) {
+    autoTagBtn.addEventListener('click', async () => {
+      if (!confirm('Veritabanındaki sorular Gemini Flash ile analiz edilip MEB lise konularına göre yeniden etiketlenecek. Devam edilsin mi?')) return;
+      autoTagBtn.disabled = true;
+      const oldText = autoTagBtn.textContent;
+      autoTagBtn.textContent = 'Etiketleniyor...';
+      try {
+        const result = await store.autoTagQuestions({ overwrite: true, limit: 200 });
+        showToast({
+          title: 'Etiketleme tamamlandı',
+          message: result.updated + ' soru güncellendi, ' + result.skipped + ' soru atlandı.',
+          type: result.updated ? 'success' : 'warning',
+        });
+        renderQuestionBank(container);
+      } catch (error) {
+        showToast({ title: 'Etiketleme hatası', message: error.message, type: 'error' });
+        autoTagBtn.disabled = false;
+        autoTagBtn.textContent = oldText;
+      }
+    });
+  }
 
   container.querySelectorAll('.answer-option-btn').forEach(button => {
     button.addEventListener('click', () => {
@@ -303,26 +327,6 @@ function saveQuestionForm(overlay, existing) {
 
 function selectField(label, id, options, selected) {
   return '<div class="form-group"><label class="form-label">' + label + '</label><select class="form-select" id="' + id + '">' + options.map(option => '<option value="' + escapeHtml(option[0]) + '"' + (option[0] === selected ? ' selected' : '') + '>' + escapeHtml(option[1]) + '</option>').join('') + '</select></div>';
-}
-
-function buildWeakRows(questions, answers) {
-  const questionMap = new Map(questions.map(question => [question.id, question]));
-  const rows = new Map();
-
-  answers.forEach(answer => {
-    const question = questionMap.get(answer.questionId);
-    if (!question) return;
-    const key = question.lesson + '|' + question.topicName;
-    if (!rows.has(key)) rows.set(key, { lesson: question.lesson, topicName: question.topicName, correct: 0, wrong: 0 });
-    const row = rows.get(key);
-    if (answer.isCorrect) row.correct += 1;
-    else row.wrong += 1;
-  });
-
-  return [...rows.values()]
-    .filter(row => row.wrong > 0)
-    .map(row => ({ ...row, wrongRate: Math.round((row.wrong / Math.max(1, row.correct + row.wrong)) * 100) }))
-    .sort((a, b) => b.wrongRate - a.wrongRate || b.wrong - a.wrong);
 }
 
 function escapeHtml(value) {

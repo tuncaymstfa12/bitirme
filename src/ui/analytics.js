@@ -6,6 +6,7 @@
 import { store } from '../data/store.js';
 import { t } from '../data/i18n.js';
 import { identifyWeakAreas, getMasteryRadarData, generateInsights, calculateTopicMastery, detectTrend, getConsistencyData } from '../engine/performanceAnalyzer.js';
+import { analyzeTopicsFromQuestions, identifyWeakTopics, identifyStrongTopics, identifyUntestedTopics } from '../engine/topicAnalyzer.js';
 import { rankTopics, getPriorityLabel, getPriorityClass } from '../engine/priorityCalculator.js';
 import { drawRadarChart, drawLineChart, renderStars } from './components.js';
 
@@ -16,10 +17,18 @@ export function renderAnalytics(container) {
   const sessions = store.getSessions();
   const settings = store.getSettings();
 
+  const questions = store.getQuestions();
+  const questionAnswers = store.getQuestionAnswers();
   const weakAreas = identifyWeakAreas(topics, mockResults);
   const radarData = getMasteryRadarData(topics, mockResults);
   const consistencyData = getConsistencyData(sessions);
   const ranked = rankTopics(exams, topics, mockResults, settings.weights);
+  const questionAnalysis = questions.length > 0
+    ? analyzeTopicsFromQuestions(questions, questionAnswers)
+    : [];
+  const weakTopics = identifyWeakTopics(questionAnalysis);
+  const strongTopics = identifyStrongTopics(questionAnalysis);
+  const untestedTopics = identifyUntestedTopics(questionAnalysis);
 
   container.innerHTML = `
     <div class="page-header">
@@ -79,6 +88,52 @@ export function renderAnalytics(container) {
           </table>
         </div>
       </div>
+
+      ${questionAnalysis.length > 0 ? `
+      <div class="section animate-fade-in-up" style="margin-top:var(--space-xl); animation-delay: 0.22s">
+        <div class="card">
+          <div class="card-header"><h3 class="card-title">📝 Soru Bazlı Konu Analizi</h3></div>
+          <div style="overflow-x:auto;"><table class="data-table" style="width:100%;">
+            <thead><tr>
+              <th>Konu</th><th>Ders</th><th>Doğru</th><th>Yanlış</th><th>Toplam</th><th>Skor</th><th>Durum</th>
+            </tr></thead>
+            <tbody>
+              ${[...weakTopics, ...untestedTopics, ...strongTopics].map(a => `
+                <tr>
+                  <td><strong>${a.topicName}</strong></td>
+                  <td>${a.lesson}</td>
+                  <td>${a.correct}</td>
+                  <td>${a.wrong}</td>
+                  <td>${a.totalQuestions}</td>
+                  <td>
+                    <div style="display:flex; align-items:center; gap:6px;">
+                      <span style="min-width:36px;font-size:var(--font-sm);">${a.answeredQuestions ? (a.adjustedScore*100).toFixed(0) + '%' : '—'}</span>
+                      ${a.answeredQuestions > 0 ? `
+                        <div class="progress-bar" style="width:80px; height:6px;">
+                          <div class="progress-fill" style="width:${(a.adjustedScore*100)}%; background:${
+                            a.status === 'strong' ? 'var(--color-success)' :
+                            a.status === 'weak' ? 'var(--color-warning)' : 'var(--color-danger)'
+                          }"></div>
+                        </div>
+                      ` : ''}
+                    </div>
+                  </td>
+                  <td><span class="mastery-dot ${a.status}"></span> ${
+                    a.status === 'critical' ? 'Kritik' :
+                    a.status === 'weak' ? 'Zayıf' :
+                    a.status === 'untested' ? 'Çözülmedi' :
+                    a.status === 'strong' ? 'İyi' : 'Orta'
+                  }</td>
+                </tr>
+              `).join('')}
+              ${weakTopics.length === 0 && strongTopics.length === 0 && untestedTopics.length === 0 ? `
+                <tr><td colspan="7" style="text-align:center;color:var(--text-tertiary);">Henüz yeterli soru verisi yok.</td></tr>
+              ` : ''}
+            </tbody>
+          </table></div>
+        </div>
+      </div>
+      ` : ''}
 
       <!-- Consistency Heatmap -->
       <div class="section animate-fade-in-up" style="margin-top:var(--space-xl); animation-delay: 0.25s">
