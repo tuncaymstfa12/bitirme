@@ -315,7 +315,7 @@ def find_section_for_page(sections, page_number):
     for section in sections:
         if section['startPage'] <= page_number <= section['endPage']:
             return section
-    return sections[0]
+    return None
 
 
 def collect_answer_key_headers(page, exam_type, max_header_y=160):
@@ -361,6 +361,11 @@ def collect_answer_key_headers(page, exam_type, max_header_y=160):
 
 
 def is_answer_key_page(page, sections, exam_type):
+    if len(sections) == 1:
+        section_code = sections[0]['sectionCode']
+        values = detect_single_section_answer_key(page, section_code)
+        return len(values.get(section_code, {})) >= 10
+
     matched_codes = {
         header['sectionCode']
         for header in collect_answer_key_headers(page, exam_type)
@@ -369,10 +374,89 @@ def is_answer_key_page(page, sections, exam_type):
     return len(matched_codes) >= min(2, len(sections))
 
 
+def count_answer_key_rows(page):
+    number_rows = 0
+    answer_rows = 0
+    for line in page['lines']:
+        text = clean_spaces(line['text'])
+        if re.fullmatch(r'(\d{1,3})\.', text):
+            number_rows += 1
+        elif re.fullmatch(r'([A-E])', text):
+            answer_rows += 1
+    return number_rows, answer_rows
+
+
+def cluster_answer_key_columns(tokens, x_slack=24):
+    columns = []
+    for token in sorted(tokens, key=lambda item: item['xCenter']):
+        column = None
+        for candidate in columns:
+            if abs(candidate['xCenter'] - token['xCenter']) <= x_slack:
+                column = candidate
+                break
+        if column is None:
+            column = {'xCenter': token['xCenter'], 'tokens': []}
+            columns.append(column)
+        else:
+            column['xCenter'] = (column['xCenter'] + token['xCenter']) / 2
+        column['tokens'].append(token)
+    return [column for column in columns if len(column['tokens']) >= 3]
+
+
+def detect_single_section_answer_key(page, section_code):
+    tokens = []
+    for line in page['lines']:
+        text = clean_spaces(line['text'])
+        number_match = re.fullmatch(r'(\d{1,3})\.', text)
+        answer_match = re.fullmatch(r'([A-E])', text)
+        if not number_match and not answer_match:
+            continue
+        tokens.append({
+            'kind': 'number' if number_match else 'answer',
+            'value': number_match.group(1) if number_match else answer_match.group(1),
+            'xCenter': (line['xMin'] + line['xMax']) / 2,
+            'yMin': line['yMin'],
+        })
+
+    if len(tokens) < 20:
+        return {}
+
+    number_columns = cluster_answer_key_columns([token for token in tokens if token['kind'] == 'number'])
+    answer_columns = cluster_answer_key_columns([token for token in tokens if token['kind'] == 'answer'])
+    if not number_columns or not answer_columns:
+        return {}
+
+    values = {}
+    used_answers = set()
+    for number_column in sorted(number_columns, key=lambda item: item['xCenter']):
+        candidate_answers = [
+            column for column in answer_columns
+            if column['xCenter'] > number_column['xCenter'] and (column['xCenter'] - number_column['xCenter']) <= 80
+        ]
+        if not candidate_answers:
+            continue
+        answer_column = min(candidate_answers, key=lambda item: item['xCenter'] - number_column['xCenter'])
+        for number_token in sorted(number_column['tokens'], key=lambda item: item['yMin']):
+            answer_token = None
+            for candidate in sorted(answer_column['tokens'], key=lambda item: abs(item['yMin'] - number_token['yMin'])):
+                answer_key = (candidate['xCenter'], candidate['yMin'], candidate['value'])
+                if answer_key in used_answers:
+                    continue
+                if abs(candidate['yMin'] - number_token['yMin']) <= 4:
+                    answer_token = candidate
+                    used_answers.add(answer_key)
+                    break
+            if answer_token:
+                values[str(int(number_token['value']))] = answer_token['value']
+
+    return {section_code: values} if values else {}
+
+
 def detect_markers_from_text(page, section):
     candidate_markers = []
     is_two_column = detect_two_column(page)
     column_width = page['widthPoints'] / 2 if is_two_column else page['widthPoints']
+    max_questions = section.get('questionCount')
 
     for line in page['lines']:
         text = normalize_marker_text(line['text'])
@@ -384,6 +468,8 @@ def detect_markers_from_text(page, section):
 
         question_number = int(match.group(1))
         if question_number < 1 or question_number > 200:
+            continue
+        if max_questions and question_number > int(max_questions):
             continue
 
         column_index = 1 if is_two_column and line['xMin'] > page['widthPoints'] * 0.5 else 0
@@ -447,6 +533,7 @@ def detect_markers_from_ocr(image_path, page_number, section):
 
     page_height, page_width = image.shape[:2]
     is_two_column = detect_two_column_from_image(image)
+    max_questions = section.get('questionCount')
     if is_two_column:
         half = page_width // 2
         regions = [(0, 0, half, page_height, 0), (half, 0, page_width - half, page_height, 1)]
@@ -473,6 +560,8 @@ def detect_markers_from_ocr(image_path, page_number, section):
                     continue
                 question_number = int(match.group(1))
                 if question_number < 1 or question_number > 200:
+                    continue
+                if max_questions and question_number > int(max_questions):
                     continue
                 x_min, y_min, _x_max, y_max = polygon_bounds(box)
                 markers.append({
@@ -665,6 +754,14 @@ def detect_answer_key_from_pages(pages, sections, exam_type):
     if not pages or not sections:
         return {}
 
+    if len(sections) == 1:
+        section_code = sections[0]['sectionCode']
+        for page in reversed(pages):
+            values = detect_single_section_answer_key(page, section_code)
+            if values:
+                return values
+        return {}
+
     section_lookup = {section['sectionCode']: section for section in sections}
 
     for page in reversed(pages):
@@ -763,12 +860,12 @@ def build_review(args):
         markers = []
         is_two_column = False
 
-        if page_info and page_number not in answer_key_page_numbers:
+        if page_info and section and page_number not in answer_key_page_numbers:
             markers, is_two_column = detect_markers_from_text(page_info, section)
             if markers:
                 add_crop_bounds_text(page_info, markers, is_two_column)
 
-        if not markers and page_number not in answer_key_page_numbers:
+        if not markers and section and page_number not in answer_key_page_numbers:
             markers, is_two_column = detect_markers_from_ocr(page_image_path, page_number, section)
             if markers:
                 add_crop_bounds_pixels(markers, image_width, image_height, is_two_column)
@@ -812,6 +909,16 @@ def build_review(args):
         item['crop']['y'],
         item['sectionQuestionNumber'],
     ))
+    deduped_detections = []
+    seen_question_keys = set()
+    for detection in detections:
+        key = (detection['sectionCode'], detection['sectionQuestionNumber'])
+        if key in seen_question_keys:
+            continue
+        seen_question_keys.add(key)
+        deduped_detections.append(detection)
+    detections = deduped_detections
+
     for index, detection in enumerate(detections, start=1):
         detection['globalQuestionOrder'] = index
 

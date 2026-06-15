@@ -1994,14 +1994,22 @@ async function uploadBookletTestPdf(testId, req, res) {
 }
 
 async function getBookletReview(testId, res) {
-  await ensureBookletTestExists(testId);
+  const { rows } = await query('SELECT id, title, exam_type, booklet_type, status FROM booklet_tests WHERE id = $1', [testId]);
+  if (!rows.length) return sendJson(res, 404, { error: 'Test bulunamadı.' });
   let review;
   try {
     review = await readReview(testId);
   } catch {
     return sendJson(res, 404, { error: 'Bu test icin henuz review dosyasi olusturulmadi.' });
   }
-  return sendJson(res, 200, buildReviewResponse(testId, review));
+  const test = rows[0];
+  return sendJson(res, 200, buildReviewResponse(testId, {
+    ...review,
+    title: review.title || test.title,
+    examType: review.examType || test.exam_type,
+    bookletType: review.bookletType || test.booklet_type,
+    status: test.status || review.status,
+  }));
 }
 
 async function updateBookletReviewQuestion(testId, tempId, req, res) {
@@ -2316,6 +2324,9 @@ async function finalizeBookletTest(testId, res) {
   } finally {
     client.release();
   }
+
+  review.status = 'finalized';
+  await writeReview(testId, review);
 
   return sendJson(res, 200, { success: true, savedCount: active.length });
 }

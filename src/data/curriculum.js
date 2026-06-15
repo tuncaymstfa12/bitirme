@@ -111,6 +111,7 @@ export const CURRICULUM = {
         'Uzay Geometri'
       ],
       'Türk Dili ve Edebiyatı': [
+        'Paragraf',
         'İslamiyet Öncesi Türk Edebiyatı', 'İslami Dönem Türk Edebiyatı',
         'Divan Edebiyatı', 'Halk Edebiyatı', 'Tanzimat Edebiyatı',
         'Servet-i Fünun', 'Fecr-i Ati', 'Milli Edebiyat',
@@ -141,6 +142,7 @@ export const CURRICULUM = {
     },
     sozel: {
       'Türk Dili ve Edebiyatı': [
+        'Paragraf',
         'İslamiyet Öncesi Türk Edebiyatı', 'İslami Dönem Türk Edebiyatı',
         'Divan Edebiyatı', 'Halk Edebiyatı', 'Tanzimat Edebiyatı',
         'Servet-i Fünun', 'Fecr-i Ati', 'Milli Edebiyat',

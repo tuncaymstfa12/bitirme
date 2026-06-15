@@ -24,11 +24,11 @@ export function renderDashboard(container) {
   const todayStr = formatLocalDate(new Date());
   const todaySessions = sessions.filter(s => s.date === todayStr && s.status !== 'break');
 
-  // Upcoming exams (next 30 days)
+  // Exams around today (last 30 days + next 30 days)
   const upcomingExams = exams
     .filter(e => {
       const d = daysUntil(e.date);
-      return d >= 0 && d <= 30;
+      return d >= -30 && d <= 30;
     })
     .sort((a, b) => new Date(a.date) - new Date(b.date));
 
@@ -119,13 +119,14 @@ export function renderDashboard(container) {
           <h3 class="section-title">🎯 ${t('dashboard.upcomingExams')}</h3>
           ${upcomingExams.length === 0 
             ? `<div class="card"><div class="empty-state"><p>${t('dashboard.noUpcomingExams')}</p></div></div>`
-            : upcomingExams.map(exam => {
-                const days = daysUntil(exam.date);
-                const examTopics = topics.filter(t => t.examId === exam.id);
-                return `
-                  <div class="card" style="margin-bottom: var(--space-sm);">
-                    <div style="display: flex; align-items: center; gap: var(--space-md);">
-                      <span class="exam-color-lg" style="background: ${exam.color}"></span>
+              : upcomingExams.map(exam => {
+                  const days = daysUntil(exam.date);
+                  const isPast = days < 0;
+                  const examTopics = topics.filter(t => t.examId === exam.id);
+                  return `
+                    <div class="card" style="margin-bottom: var(--space-sm);">
+                      <div style="display: flex; align-items: center; gap: var(--space-md);">
+                        <span class="exam-color-lg" style="background: ${exam.color}"></span>
                       <div style="flex: 1;">
                         <div style="font-weight: 700;">${exam.name}</div>
                         <div style="font-size: var(--font-xs); color: var(--text-tertiary);">
@@ -133,10 +134,15 @@ export function renderDashboard(container) {
                         </div>
                       </div>
                       <div style="text-align: right;">
-                        <div style="font-size: var(--font-xl); font-weight: 800; color: ${days <= 3 ? 'var(--color-danger)' : days <= 7 ? 'var(--color-warning)' : 'var(--text-accent)'};">
-                          ${days}
-                        </div>
-                        <div style="font-size: var(--font-xs); color: var(--text-tertiary);">${t('dashboard.daysLeft')}</div>
+                        ${isPast
+                          ? `<span class="tag" style="background: rgba(239, 68, 68, 0.12); border-color: rgba(239, 68, 68, 0.24); color: var(--color-danger);">${t('dashboard.passed')}</span>`
+                          : `
+                            <div style="font-size: var(--font-xl); font-weight: 800; color: ${days <= 3 ? 'var(--color-danger)' : days <= 7 ? 'var(--color-warning)' : 'var(--text-accent)'};">
+                              ${days}
+                            </div>
+                            <div style="font-size: var(--font-xs); color: var(--text-tertiary);">${t('dashboard.daysLeft')}</div>
+                          `
+                        }
                       </div>
                     </div>
                   </div>

@@ -247,10 +247,8 @@ function bindReviewEvents(container, review) {
   root.querySelector('#booklet-finalize-btn').addEventListener('click', async () => {
     try {
       const data = await finalizeBookletTest(review.testId);
-      const finalQuestions = await getFinalBookletQuestions(review.testId);
       showToast({ title: 'Kaydedildi', message: data.savedCount + ' soru kalici olarak kaydedildi.', type: 'success' });
-      root.querySelector('#booklet-final-root').innerHTML = renderFinalQuestions(finalQuestions);
-      bindFinalQuestionEvents(root, review.testId);
+      await loadReview(container, review.testId);
     } catch (error) {
       showToast({ title: 'Finalize hatasi', message: error.message, type: 'error' });
     }
@@ -298,8 +296,7 @@ function bindReviewEvents(container, review) {
         message: totalUpdated + ' soru taglendi, ' + totalSkipped + ' sonuc atlandi, ' + remaining + ' soru bos kaldi.',
         type: totalUpdated && !remaining ? 'success' : 'warning',
       });
-      root.querySelector('#booklet-final-root').innerHTML = renderFinalQuestions(finalQuestions);
-      bindFinalQuestionEvents(root, review.testId);
+      await loadReview(container, review.testId);
       button.disabled = false;
       button.textContent = oldText;
     } catch (error) {
