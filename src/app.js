@@ -12,7 +12,8 @@ import { fetchCurrentUserApi, logoutUserApi } from './api/authApi.js';
 import { renderDashboard } from './ui/dashboard.js';
 import { renderAdminImport } from './ui/adminImport.js';
 import { renderExamManager } from './ui/examManager.js';
-import { renderQuestionBank } from './ui/questionBank.js';
+import { renderQuizView } from './ui/quizView.js';
+import { renderTopicStatsView } from './ui/topicStatsView.js';
 import { renderScheduleView } from './ui/scheduleView.js';
 import { renderAnalytics } from './ui/analytics.js';
 import { renderProfile } from './ui/profileView.js';
@@ -26,7 +27,8 @@ window.__models = { createExam, createTopic, createMockResult };
 const routes = {
   dashboard: { labelKey: 'nav.dashboard', icon: '📊', render: renderDashboard },
   exams: { labelKey: 'nav.exams', icon: '🎓', render: renderExamManager },
-  questions: { labelKey: 'nav.questions', icon: '?', render: renderQuestionBank },
+  quiz: { labelKey: 'nav.quiz', icon: '🎯', render: renderQuizView },
+  'topic-stats': { labelKey: 'nav.topicStats', icon: '📋', render: renderTopicStatsView },
   'admin-import': { labelKey: 'nav.adminImport', icon: 'AI', render: renderAdminImport, hidden: true },
   schedule: { labelKey: 'nav.schedule', icon: '🗓', render: renderScheduleView },
   analytics: { labelKey: 'nav.analytics', icon: '📈', render: renderAnalytics },
@@ -128,10 +130,6 @@ function renderAppShell() {
       </div>
       <nav class="sidebar-nav" id="sidebar-nav"></nav>
       <div class="sidebar-footer">
-        <div class="sidebar-engine-card">
-          <div class="sidebar-engine-label">${t('app.engineLabel')}</div>
-          <div class="sidebar-engine-text">${t('app.engineDesc')}</div>
-        </div>
         <div class="sidebar-user-card">
           <div class="sidebar-user-name">${escapeHtml(currentUser?.name || 'User')}</div>
           <div class="sidebar-user-email">${escapeHtml(currentUser?.email || '')}</div>

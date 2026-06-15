@@ -22,6 +22,8 @@ services:
       dockerfile: Dockerfile.backend
     ports:
       - "8000:8000"
+    volumes:
+      - ./storage:/app/storage
     environment:
       DATABASE_HOST: db
       DATABASE_PORT: 5432
@@ -29,6 +31,8 @@ services:
       DATABASE_USER: postgres
       DATABASE_PASSWORD: Tuncay1903
       AUTH_API_PORT: 8000
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash-lite}
     depends_on:
       db:
         condition: service_healthy
@@ -38,9 +42,11 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
     ports:
-      - "3000:3000"
+      - "4173:4173"
     environment:
       - DOCKER=1
+      - FRONTEND_PORT=4173
+      - BACKEND_PORT=8000
     depends_on:
       - backend
 

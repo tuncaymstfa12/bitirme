@@ -145,17 +145,43 @@ function showTopicForm(examId,existing){
   var et=(existing&&existing.examType)||'TYT';
   var tr=(existing&&existing.track)||'sayisal';
   var ls=getLessonsForTrack(et,tr);
-  var ln=(existing&&existing.lesson)||ls[0];
+  var ln=(existing&&existing.lesson)||ls[0]||'';
   var tn=(existing?existing.name:'');
-  var allTopics=[];
-  ls.forEach(function(l){getTopicsForLesson(et,tr,l).forEach(function(t){allTopics.push(t);});});
   var selectedExamId=existing?existing.examId:(examId||'');
 
-  function build(){
+  function getTrackOptions(examType) {
+    if (examType !== 'AYT') return [];
     return [
-      '<div class="form-group"><label class="form-label">'+t('exams.examLabel')+'</label><select class="form-select" id="t-exam">'+exams.map(function(e){return '<option value="'+e.id+'"'+(e.id===selectedExamId?' selected':'')+'>'+e.name+'</option>';}).join('')+'</select></div>',
+      { value:'sayisal', label:t('exams.trackSayisal') },
+      { value:'esit_agirlik', label:t('exams.trackEa') },
+      { value:'sozel', label:t('exams.trackSozel') },
+      { value:'dil', label:t('exams.trackDil') }
+    ];
+  }
+
+  function getTopicsForCurrentLesson() {
+    return getTopicsForLesson(et,tr,ln);
+  }
+
+  function buildExamOptions() {
+    var options = [];
+    if (!selectedExamId) {
+      options.push('<option value="" selected disabled>'+t('exams.selectExamPlaceholder')+'</option>');
+    }
+    return options.concat(exams.map(function(e){
+      return '<option value="'+e.id+'"'+(e.id===selectedExamId?' selected':'')+'>'+e.name+'</option>';
+    })).join('');
+  }
+
+  function build(){
+    var lessonTopics=getTopicsForCurrentLesson();
+    var trackOptions=getTrackOptions(et);
+    return [
+      '<div class="form-group"><label class="form-label">'+t('exams.examLabel')+'</label><select class="form-select" id="t-exam">'+buildExamOptions()+'</select></div>',
+      '<div class="form-group"><label class="form-label">'+t('exams.examTypeLabel')+'</label><select class="form-select" id="t-et"><option value="TYT"'+(et==='TYT'?' selected':'')+'>TYT</option><option value="AYT"'+(et==='AYT'?' selected':'')+'>AYT</option></select></div>',
+      '<div class="form-group" id="t-track-wrap" style="'+(et==='AYT'?'':'display:none;')+'"><label class="form-label">'+t('exams.trackLabel')+'</label><select class="form-select" id="t-tr">'+trackOptions.map(function(opt){return '<option value="'+opt.value+'"'+(opt.value===tr?' selected':'')+'>'+opt.label+'</option>';}).join('')+'</select></div>',
       '<div class="form-group"><label class="form-label">'+t('exams.lessonLabel')+'</label><select class="form-select" id="t-ln">'+ls.map(function(l){return '<option value="'+l+'"'+(l===ln?' selected':'')+'>'+l+'</option>';}).join('')+'</select></div>',
-      '<div class="form-group"><label class="form-label">'+t('exams.topicSearchLabel')+'</label><input type="text" class="form-input" id="t-srch" placeholder="'+t('exams.topicSearchPlaceholder')+'" value="'+tn+'" autocomplete="off"><select class="form-select" id="t-sel" size="6" style="margin-top:4px;">'+allTopics.map(function(t){return '<option value="'+t+'"'+(t===tn?' selected':'')+'>'+t+'</option>';}).join('')+'</select></div>',
+      '<div class="form-group"><label class="form-label">'+t('exams.topicSearchLabel')+'</label><input type="text" class="form-input" id="t-srch" placeholder="'+t('exams.topicSearchPlaceholder')+'" value="'+tn+'" autocomplete="off"><select class="form-select" id="t-sel" size="6" style="margin-top:4px;">'+lessonTopics.map(function(t){return '<option value="'+t+'"'+(t===tn?' selected':'')+'>'+t+'</option>';}).join('')+'</select></div>',
       '<div class="form-group"><label class="form-label">'+t('exams.topicWeight')+' — <span id="t-wl">'+(existing?existing.weight:5)+'/10</span></label><input type="range" class="form-slider" id="t-wt" min="1" max="10" value="'+(existing?existing.weight:5)+'"></div>',
       '<div class="form-group"><label class="form-label">'+t('exams.selfAssessment')+'</label><div style="display:flex;gap:var(--space-sm);margin-top:var(--space-xs);">'+[1,2,3,4,5].map(function(i){return '<label style="cursor:pointer;font-size:28px;color:'+(i<=(existing?existing.selfAssessment:3)?'#fbbf24':'#3a3a5c')+'" class="star-btn" data-value="'+i+'">★</label>';}).join('')+'</div><input type="hidden" id="t-sa" value="'+(existing?existing.selfAssessment:3)+'"></div>',
       '<div class="form-group"><label class="form-label">'+t('exams.estimatedTime')+'</label><input type="number" class="form-input" id="t-etm" value="'+(existing?existing.estimatedMinutes:60)+'" min="30" step="15"></div>'
@@ -168,14 +194,77 @@ function showTopicForm(examId,existing){
     footer:'<button class="btn btn-secondary" id="modal-cancel">'+t('exams.cancel')+'</button><button class="btn btn-primary" id="modal-save">'+(isEdit?t('exams.updateTopic'):t('exams.addTopicBtn'))+'</button>'
   });
 
+  function renderTopicOptions(topicNames, selectedName) {
+    ov.querySelector('#t-sel').innerHTML=topicNames.map(function(topicName){
+      return '<option value="'+topicName+'"'+(topicName===selectedName?' selected':'')+'>'+topicName+'</option>';
+    }).join('');
+  }
+
+  function refreshLessonOptions() {
+    ls=getLessonsForTrack(et,tr);
+    if (!ls.includes(ln)) {
+      ln=ls[0]||'';
+    }
+    var lessonSelect=ov.querySelector('#t-ln');
+    lessonSelect.innerHTML=ls.map(function(lesson){
+      return '<option value="'+lesson+'"'+(lesson===ln?' selected':'')+'>'+lesson+'</option>';
+    }).join('');
+  }
+
+  function refreshTopicOptions() {
+    var query=(ov.querySelector('#t-srch').value||'').trim().toLowerCase();
+    var topics=getTopicsForCurrentLesson().filter(function(topicName){
+      return !query || topicName.toLowerCase().includes(query);
+    });
+    renderTopicOptions(topics, ov.querySelector('#t-srch').value.trim());
+  }
+
+  function refreshTrackOptions() {
+    var wrap=ov.querySelector('#t-track-wrap');
+    var trackSelect=ov.querySelector('#t-tr');
+    if (et !== 'AYT') {
+      wrap.style.display='none';
+      tr='sayisal';
+      if (trackSelect) {
+        trackSelect.innerHTML='';
+      }
+      return;
+    }
+    wrap.style.display='';
+    var options=getTrackOptions(et);
+    if (!options.some(function(opt){ return opt.value===tr; })) {
+      tr=options[0].value;
+    }
+    trackSelect.innerHTML=options.map(function(opt){
+      return '<option value="'+opt.value+'"'+(opt.value===tr?' selected':'')+'>'+opt.label+'</option>';
+    }).join('');
+  }
+
   ov.querySelector('#t-srch').addEventListener('input',function(){
-    var q=this.value.toLowerCase();
-    ov.querySelector('#t-sel').innerHTML=allTopics.filter(function(t){return t.toLowerCase().includes(q);}).map(function(t){return '<option value="'+t+'">'+t+'</option>';}).join('');
+    refreshTopicOptions();
   });
   ov.querySelector('#t-sel').addEventListener('change',function(){ov.querySelector('#t-srch').value=this.value;});
-  ov.querySelector('#t-ln').addEventListener('change',function(){ln=this.value;var tp=getTopicsForLesson(et,tr,ln);ov.querySelector('#t-sel').innerHTML=tp.map(function(t){return '<option value="'+t+'">'+t+'</option>';}).join('');});
+  ov.querySelector('#t-et').addEventListener('change',function(){
+    et=this.value;
+    refreshTrackOptions();
+    refreshLessonOptions();
+    refreshTopicOptions();
+  });
+  ov.querySelector('#t-tr').addEventListener('change',function(){
+    tr=this.value;
+    refreshLessonOptions();
+    refreshTopicOptions();
+  });
+  ov.querySelector('#t-ln').addEventListener('change',function(){
+    ln=this.value;
+    refreshTopicOptions();
+  });
   ov.querySelector('#t-wt').addEventListener('input',function(){ov.querySelector('#t-wl').textContent=this.value+'/10';});
   ov.querySelectorAll('.star-btn').forEach(function(s){s.addEventListener('click',function(){var v=parseInt(s.dataset.value);ov.querySelector('#t-sa').value=v;ov.querySelectorAll('.star-btn').forEach(function(x){x.style.color=parseInt(x.dataset.value)<=v?'#fbbf24':'#3a3a5c';});});});
+
+  refreshTrackOptions();
+  refreshLessonOptions();
+  refreshTopicOptions();
 
   ov.querySelector('#modal-cancel').addEventListener('click',closeModal);
   ov.querySelector('#modal-save').addEventListener('click',function(){
@@ -185,8 +274,8 @@ function showTopicForm(examId,existing){
     if(!selectedExam){showToast({title:t('exams.warning'),message:t('exams.selectExamWarning'),type:'error'});return;}
     var w=parseInt(ov.querySelector('#t-wt').value),sa=parseInt(ov.querySelector('#t-sa').value),em=parseInt(ov.querySelector('#t-etm').value);
     var xl=ov.querySelector('#t-ln').value;
-    if(isEdit){store.updateTopic(existing.id,{name:n,weight:w,selfAssessment:sa,estimatedMinutes:em,lesson:xl,examId:selectedExam});showToast({title:t('exams.topicUpdated'),message:t('exams.topicUpdatedMsg',{name:n}),type:'success'});}
-    else{var tp=createTopic({examId:selectedExam,name:n,weight:w,selfAssessment:sa,estimatedMinutes:em,lesson:xl});store.addTopic(tp);showToast({title:t('exams.topicAdded'),message:t('exams.topicAddedMsg',{name:n}),type:'success'});}
+    if(isEdit){store.updateTopic(existing.id,{name:n,weight:w,selfAssessment:sa,estimatedMinutes:em,examType:et,track:tr,lesson:xl,examId:selectedExam});showToast({title:t('exams.topicUpdated'),message:t('exams.topicUpdatedMsg',{name:n}),type:'success'});}
+    else{var tp=createTopic({examId:selectedExam,name:n,weight:w,selfAssessment:sa,estimatedMinutes:em,examType:et,track:tr,lesson:xl});store.addTopic(tp);showToast({title:t('exams.topicAdded'),message:t('exams.topicAddedMsg',{name:n}),type:'success'});}
     closeModal();var c=document.getElementById('main-content');if(c)renderExamManager(c);
   });
 }

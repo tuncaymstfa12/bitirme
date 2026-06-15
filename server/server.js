@@ -6,10 +6,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { query, getClient } from './db.js';
+import { CURRICULUM } from '../src/data/curriculum.js';
 import { parseAnswerKeyText } from './bookletImport/answerKeyParser.js';
 import { runBookletExtractor, regenerateBookletCrop } from './bookletImport/pythonBridge.js';
 import {
   ensureTestStorage,
+  getBookletStorageRoot,
   getOriginalPdfPath,
   getReviewPath,
   getTestDir,
@@ -22,6 +24,20 @@ const scrypt = promisify(scryptCallback);
 const execFile = promisify(execFileCallback);
 const PORT = Number(process.env.AUTH_API_PORT || 3001);
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const BOOKLET_EXAM_TYPES = ['TYT', 'AYT', 'YDT'];
+const BOOKLET_QUIZ_SYNC_TTL_MS = 30 * 1000;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
+const GEMINI_API_KEY =
+  process.env.GEMINI_API_KEY ||
+  process.env.GEMINI_FLASH_API_KEY ||
+  process.env.GOOGLE_GEMINI_API_KEY ||
+  process.env.GOOGLE_API_KEY ||
+  process.env.VITE_GEMINI_API_KEY;
+const GEMINI_TIMEOUT_MS = Math.max(Number(process.env.GEMINI_TIMEOUT_MS) || 45000, 5000);
+let bookletQuizSyncState = {
+  promise: null,
+  completedAt: 0,
+};
 
 const server = http.createServer(async (req, res) => {
   setCorsHeaders(res);
@@ -128,10 +144,34 @@ const server = http.createServer(async (req, res) => {
     // Question Bank
     if (req.method === 'GET' && path === '/api/questions') return await getQuestions(studentId, url, res);
     if (req.method === 'POST' && path === '/api/questions') return await createQuestion(studentId, req, res);
+    if (req.method === 'POST' && path === '/api/questions/auto-tag') {
+      return await autoTagQuestions(studentId, req, res);
+    }
 
     const questionAnswerMatch = path.match(/^\/api\/questions\/([a-f0-9-]+)\/answer$/);
     if (questionAnswerMatch && req.method === 'POST') {
       return await answerQuestion(studentId, questionAnswerMatch[1], req, res);
+    }
+
+    if (req.method === 'GET' && path === '/api/quiz/booklet-lessons') {
+      return await getQuizBookletLessons(studentId, url, res);
+    }
+    if (req.method === 'GET' && path === '/api/quiz/booklet-branches') {
+      return await getQuizBookletBranches(studentId, url, res);
+    }
+    if (req.method === 'GET' && path === '/api/quiz/booklet-topics') {
+      return await getQuizBookletTopics(studentId, url, res);
+    }
+    if (req.method === 'GET' && path === '/api/quiz/booklet-topic-stats') {
+      return await getBookletTopicStats(studentId, url, res);
+    }
+    if (req.method === 'GET' && path === '/api/quiz/booklet-questions') {
+      return await getQuizBookletQuestions(studentId, url, res);
+    }
+
+    const quizBookletAnswerMatch = path.match(/^\/api\/quiz\/booklet-questions\/([a-f0-9-]+)\/answer$/);
+    if (quizBookletAnswerMatch && req.method === 'POST') {
+      return await answerQuizBookletQuestion(studentId, quizBookletAnswerMatch[1], req, res);
     }
 
     const questionMatch = path.match(/^\/api\/questions\/([a-f0-9-]+)$/);
@@ -159,8 +199,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     const bookletTestMatch = path.match(/^\/api\/admin\/booklet-tests\/([a-f0-9-]+)$/);
-    if (bookletTestMatch && req.method === 'GET') {
-      return await getBookletTest(bookletTestMatch[1], res);
+    if (bookletTestMatch) {
+      if (req.method === 'GET') return await getBookletTest(bookletTestMatch[1], res);
+      if (req.method === 'DELETE') return await deleteBookletTest(bookletTestMatch[1], res);
     }
 
     const bookletUploadMatch = path.match(/^\/api\/admin\/booklet-tests\/([a-f0-9-]+)\/upload$/);
@@ -190,6 +231,11 @@ const server = http.createServer(async (req, res) => {
       return await applyBookletAnswerKey(bookletAnswerKeyMatch[1], req, res);
     }
 
+    const bookletAutoTagMatch = path.match(/^\/api\/admin\/booklet-tests\/([a-f0-9-]+)\/auto-tag$/);
+    if (bookletAutoTagMatch && req.method === 'POST') {
+      return await autoTagBookletTest(bookletAutoTagMatch[1], req, res);
+    }
+
     const bookletFinalizeMatch = path.match(/^\/api\/admin\/booklet-tests\/([a-f0-9-]+)\/finalize$/);
     if (bookletFinalizeMatch && req.method === 'POST') {
       return await finalizeBookletTest(bookletFinalizeMatch[1], res);
@@ -200,12 +246,18 @@ const server = http.createServer(async (req, res) => {
       return await getBookletQuestions(bookletQuestionsMatch[1], res);
     }
 
+    const bookletQuestionDeleteMatch = path.match(/^\/api\/admin\/booklet-tests\/([a-f0-9-]+)\/questions\/([a-f0-9-]+)$/);
+    if (bookletQuestionDeleteMatch && req.method === 'DELETE') {
+      return await deleteBookletQuestion(bookletQuestionDeleteMatch[1], bookletQuestionDeleteMatch[2], res);
+    }
+
     // Settings
     if (req.method === 'GET' && path === '/api/settings') return await getSettings(studentId, res);
     if (req.method === 'PUT' && path === '/api/settings') return await updateSettings(studentId, req, res);
 
     if (req.method === 'GET' && path === '/api/profile') return await getProfile(studentId, res);
     if (req.method === 'PUT' && path === '/api/profile') return await updateProfile(studentId, req, res);
+    console.warn(`Unhandled route: ${req.method} ${path}`);
     return sendJson(res, 404, { error: 'Route not found' });
   } catch (error) {
     const statusCode = error.statusCode || 500;
@@ -381,9 +433,9 @@ async function getTopics(studentId, url, res) {
 async function createTopic(studentId, req, res) {
   const body = await readJsonBody(req);
   const { rows } = await query(
-    `INSERT INTO topics (exam_id, student_id, name, weight, self_assessment, estimated_minutes, completed_minutes)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [body.examId, studentId, body.name, body.weight || 5, body.selfAssessment || 3, body.estimatedMinutes || 60, body.completedMinutes || 0]
+    `INSERT INTO topics (exam_id, student_id, name, exam_type, track, lesson, weight, self_assessment, estimated_minutes, completed_minutes)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+    [body.examId, studentId, body.name, body.examType || 'TYT', body.track || 'sayisal', body.lesson || '', body.weight || 5, body.selfAssessment || 3, body.estimatedMinutes || 60, body.completedMinutes || 0]
   );
   return sendJson(res, 201, mapTopic(rows[0]));
 }
@@ -393,7 +445,7 @@ async function updateTopic(studentId, id, req, res) {
   const fields = [];
   const values = [];
   let n = 1;
-  for (const [key, col] of [['name','name'], ['weight','weight'], ['selfAssessment','self_assessment'], ['estimatedMinutes','estimated_minutes'], ['completedMinutes','completed_minutes']]) {
+  for (const [key, col] of [['examId','exam_id'], ['name','name'], ['examType','exam_type'], ['track','track'], ['lesson','lesson'], ['weight','weight'], ['selfAssessment','self_assessment'], ['estimatedMinutes','estimated_minutes'], ['completedMinutes','completed_minutes']]) {
     if (body[key] !== undefined) {
       fields.push(`${col} = $${n++}`);
       values.push(body[key]);
@@ -639,6 +691,93 @@ async function deleteQuestion(studentId, id, res) {
   return sendJson(res, 200, { success: true });
 }
 
+async function autoTagQuestions(studentId, req, res) {
+  if (!GEMINI_API_KEY) {
+    return sendJson(res, 503, { error: 'Gemini API anahtarı tanımlı değil. GEMINI_API_KEY env variable ekleyin.' });
+  }
+
+  const body = await readJsonBody(req);
+  const questionIds = Array.isArray(body.questionIds)
+    ? body.questionIds.map(id => String(id)).filter(Boolean)
+    : [];
+  const overwrite = body.overwrite === true;
+  const limit = Math.min(Math.max(Number(body.limit) || 50, 1), 200);
+
+  const { rows } = await getQuestionRows(studentId, {});
+  const idFilter = questionIds.length ? new Set(questionIds) : null;
+  const candidates = rows
+    .map(mapQuestion)
+    .filter(question => !idFilter || idFilter.has(question.id))
+    .filter(question => overwrite || !question.lesson || !question.topicName)
+    .slice(0, limit);
+
+  if (candidates.length === 0) {
+    return sendJson(res, 200, { success: true, analyzed: 0, updated: 0, skipped: 0, updatedQuestions: [], results: [] });
+  }
+
+  const rawResults = [];
+  const batchSize = 10;
+  for (let index = 0; index < candidates.length; index += batchSize) {
+    const batch = candidates.slice(index, index + batchSize);
+    const analyzed = await analyzeQuestionTagsWithGemini(batch);
+    rawResults.push(...analyzed);
+  }
+
+  const questionById = new Map(candidates.map(question => [question.id, question]));
+  const updatedIds = [];
+  const results = [];
+
+  for (const raw of rawResults) {
+    const question = questionById.get(String(raw.id || ''));
+    if (!question) continue;
+
+    const normalized = normalizeGeminiTag(raw, question);
+    if (!normalized.valid) {
+      results.push({ id: question.id, updated: false, reason: normalized.reason });
+      continue;
+    }
+
+    await query(
+      `UPDATE questions
+       SET exam_type = $1, track = $2, lesson = $3, topic_name = $4, difficulty = $5
+       WHERE id = $6 AND student_id = $7`,
+      [
+        normalized.examType,
+        normalized.track,
+        normalized.lesson,
+        normalized.topicName,
+        normalized.difficulty,
+        question.id,
+        studentId,
+      ]
+    );
+    updatedIds.push(question.id);
+    results.push({
+      id: question.id,
+      updated: true,
+      examType: normalized.examType,
+      track: normalized.track,
+      lesson: normalized.lesson,
+      topicName: normalized.topicName,
+      difficulty: normalized.difficulty,
+      confidence: normalized.confidence,
+    });
+  }
+
+  const updatedRows = updatedIds.length
+    ? await getQuestionRows(studentId, { ids: updatedIds })
+    : { rows: [] };
+
+  return sendJson(res, 200, {
+    success: true,
+    analyzed: candidates.length,
+    updated: updatedIds.length,
+    skipped: candidates.length - updatedIds.length,
+    updatedQuestions: mapQuestions(updatedRows.rows),
+    results,
+  });
+}
+
 async function answerQuestion(studentId, id, req, res) {
   const body = await readJsonBody(req);
   const selectedOption = String(body.selectedOption || '').toUpperCase();
@@ -662,6 +801,352 @@ async function answerQuestion(studentId, id, req, res) {
   return sendJson(res, 200, mapQuestionAnswer(rows[0]));
 }
 
+async function getQuizBookletLessons(studentId, url, res) {
+  const examType = String(url.searchParams.get('examType') || '').toUpperCase();
+  if (!BOOKLET_EXAM_TYPES.includes(examType)) {
+    return sendJson(res, 400, { error: 'Geçerli bir sınav türü seçiniz.' });
+  }
+
+  let rows = await getQuizBookletLessonRows(studentId, examType);
+  if (!rows.length) {
+    await syncBookletQuizInventory(true);
+    rows = await getQuizBookletLessonRows(studentId, examType);
+  }
+
+  return sendJson(res, 200, rows.map(mapQuizBookletLesson));
+}
+
+async function getQuizBookletTopics(studentId, url, res) {
+  const examType = String(url.searchParams.get('examType') || '').toUpperCase();
+  if (!BOOKLET_EXAM_TYPES.includes(examType)) {
+    return sendJson(res, 400, { error: 'Geçerli bir sınav türü seçiniz.' });
+  }
+
+  let rows = await getQuizBookletTopicRows(studentId, examType);
+  if (!rows.length) {
+    await syncBookletQuizInventory(true);
+    rows = await getQuizBookletTopicRows(studentId, examType);
+  }
+
+  return sendJson(res, 200, rows.map(mapQuizBookletTopic));
+}
+
+async function getQuizBookletBranches(studentId, url, res) {
+  const examType = String(url.searchParams.get('examType') || '').toUpperCase();
+  if (!BOOKLET_EXAM_TYPES.includes(examType)) {
+    return sendJson(res, 400, { error: 'Geçerli bir sınav türü seçiniz.' });
+  }
+
+  let rows = await getQuizBookletBranchRows(studentId, examType);
+  if (!rows.length) {
+    await syncBookletQuizInventory(true);
+    rows = await getQuizBookletBranchRows(studentId, examType);
+  }
+
+  return sendJson(res, 200, rows.map(mapQuizBookletBranch));
+}
+
+async function getBookletTopicStats(studentId, url, res) {
+  const examType = String(url.searchParams.get('examType') || '').toUpperCase();
+  if (examType && !BOOKLET_EXAM_TYPES.includes(examType)) {
+    return sendJson(res, 400, { error: 'Geçerli bir sınav türü seçiniz.' });
+  }
+
+  await syncBookletQuizInventory();
+  const rows = await getBookletTopicStatRows(studentId, examType);
+  return sendJson(res, 200, rows.map(mapBookletTopicStat));
+}
+
+async function getQuizBookletQuestions(studentId, url, res) {
+  const examType = String(url.searchParams.get('examType') || '').toUpperCase();
+  const lessonKey = String(url.searchParams.get('lessonKey') || '').trim();
+  const branchKey = String(url.searchParams.get('branchKey') || '').trim();
+  const topicKey = String(url.searchParams.get('topicKey') || '').trim();
+  const limit = Math.max(1, Math.min(20, Number(url.searchParams.get('limit') || 10) || 10));
+
+  if (!BOOKLET_EXAM_TYPES.includes(examType)) {
+    return sendJson(res, 400, { error: 'Geçerli bir sınav türü seçiniz.' });
+  }
+  if (!lessonKey && !branchKey && !topicKey) {
+    return sendJson(res, 400, { error: 'Geçerli bir branş veya konu seçiniz.' });
+  }
+
+  let rows = await getFilteredQuizBookletQuestionRows(studentId, examType, { lessonKey, branchKey, topicKey }, limit);
+  if (rows.length < limit) {
+    await syncBookletQuizInventory(true);
+    rows = await getFilteredQuizBookletQuestionRows(studentId, examType, { lessonKey, branchKey, topicKey }, limit);
+  }
+
+  if (rows.length < limit) {
+    return sendJson(res, 409, { error: 'Bu filtre için en az ' + limit + ' yeni soru yok.' });
+  }
+
+  return sendJson(res, 200, rows.map(row => mapQuizBookletQuestion(row)));
+}
+
+async function answerQuizBookletQuestion(studentId, questionId, req, res) {
+  const body = await readJsonBody(req);
+  const selectedOption = String(body.selectedOption || '').toUpperCase();
+  if (!['A', 'B', 'C', 'D', 'E'].includes(selectedOption)) {
+    return sendJson(res, 400, { error: 'Geçerli bir şık seçiniz.' });
+  }
+
+  const { rows: questionRows } = await query(
+    `SELECT q.id, q.correct_answer, q.choices
+     FROM booklet_questions q
+     JOIN booklet_tests bt ON bt.id = q.test_id
+     WHERE q.id = $1
+       AND bt.exam_type IN ('TYT', 'AYT', 'YDT')`,
+    [questionId]
+  );
+  if (!questionRows.length) {
+    return sendJson(res, 404, { error: 'Soru bulunamadı.' });
+  }
+
+  const validChoices = Array.isArray(questionRows[0].choices) && questionRows[0].choices.length
+    ? questionRows[0].choices.map(choice => String(choice || '').toUpperCase())
+    : ['A', 'B', 'C', 'D', 'E'];
+  if (!validChoices.includes(selectedOption)) {
+    return sendJson(res, 400, { error: 'Bu soru için geçerli bir şık seçiniz.' });
+  }
+
+  const isCorrect = selectedOption === String(questionRows[0].correct_answer || '').toUpperCase();
+  const { rows } = await query(
+    `INSERT INTO student_booklet_answers
+      (student_id, booklet_question_id, selected_option, is_correct)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (student_id, booklet_question_id)
+     DO UPDATE SET
+       selected_option = EXCLUDED.selected_option,
+       is_correct = EXCLUDED.is_correct,
+       answered_at = now()
+     RETURNING *`,
+    [studentId, questionId, selectedOption, isCorrect]
+  );
+
+  return sendJson(res, 200, mapBookletQuizAnswer(rows[0]));
+}
+
+async function getQuizBookletLessonRows(studentId, examType) {
+  const { rows } = await query(
+    `SELECT
+       s.section_code,
+       s.section_name,
+       COUNT(*) FILTER (WHERE sba.id IS NULL) AS available_count
+     FROM booklet_questions q
+     JOIN booklet_tests bt ON bt.id = q.test_id
+     JOIN booklet_sections s ON s.id = q.section_id
+     LEFT JOIN student_booklet_answers sba
+       ON sba.booklet_question_id = q.id AND sba.student_id = $2
+     WHERE bt.exam_type = $1
+       AND q.image_path <> ''
+       AND q.correct_answer IS NOT NULL
+     GROUP BY s.section_code, s.section_name
+     ORDER BY s.section_name`,
+    [examType, studentId]
+  );
+  return rows;
+}
+
+async function getQuizBookletTopicRows(studentId, examType) {
+  const { rows } = await query(
+    `SELECT
+       bt.exam_type,
+       q.lesson,
+       q.topic_name,
+       COUNT(*) FILTER (WHERE sba.id IS NULL) AS available_count,
+       COUNT(*) AS total_count
+     FROM booklet_questions q
+     JOIN booklet_tests bt ON bt.id = q.test_id
+     LEFT JOIN student_booklet_answers sba
+       ON sba.booklet_question_id = q.id AND sba.student_id = $2
+     WHERE bt.exam_type = $1
+       AND q.image_path <> ''
+       AND q.correct_answer IS NOT NULL
+       AND coalesce(q.lesson, '') <> ''
+       AND coalesce(q.topic_name, '') <> ''
+     GROUP BY bt.exam_type, q.lesson, q.topic_name
+     HAVING COUNT(*) FILTER (WHERE sba.id IS NULL) > 0
+     ORDER BY q.lesson, q.topic_name`,
+    [examType, studentId]
+  );
+  return rows;
+}
+
+async function getQuizBookletBranchRows(studentId, examType) {
+  const { rows } = await query(
+    `SELECT
+       bt.exam_type,
+       q.lesson,
+       COUNT(*) FILTER (WHERE sba.id IS NULL) AS available_count,
+       COUNT(*) AS total_count
+     FROM booklet_questions q
+     JOIN booklet_tests bt ON bt.id = q.test_id
+     LEFT JOIN student_booklet_answers sba
+       ON sba.booklet_question_id = q.id AND sba.student_id = $2
+     WHERE bt.exam_type = $1
+       AND q.image_path <> ''
+       AND q.correct_answer IS NOT NULL
+       AND coalesce(q.lesson, '') <> ''
+     GROUP BY bt.exam_type, q.lesson
+     HAVING COUNT(*) FILTER (WHERE sba.id IS NULL) > 0
+     ORDER BY q.lesson`,
+    [examType, studentId]
+  );
+  return rows;
+}
+
+async function getBookletTopicStatRows(studentId, examType = '') {
+  const values = [studentId];
+  const examCondition = examType ? 'AND bt.exam_type = $2' : '';
+  if (examType) values.push(examType);
+
+  const { rows } = await query(
+    `SELECT
+       bt.exam_type,
+       q.lesson,
+       q.topic_name,
+       COUNT(*) AS total_count,
+       COUNT(*) FILTER (WHERE sba.id IS NULL) AS available_count,
+       COUNT(sba.id) AS answered_count,
+       COUNT(*) FILTER (WHERE sba.is_correct = true) AS correct_count,
+       COUNT(*) FILTER (WHERE sba.is_correct = false) AS wrong_count
+     FROM booklet_questions q
+     JOIN booklet_tests bt ON bt.id = q.test_id
+     LEFT JOIN student_booklet_answers sba
+       ON sba.booklet_question_id = q.id AND sba.student_id = $1
+     WHERE bt.exam_type IN ('TYT', 'AYT', 'YDT')
+       ${examCondition}
+       AND q.image_path <> ''
+       AND q.correct_answer IS NOT NULL
+       AND coalesce(q.lesson, '') <> ''
+       AND coalesce(q.topic_name, '') <> ''
+     GROUP BY bt.exam_type, q.lesson, q.topic_name
+     ORDER BY bt.exam_type, q.lesson, q.topic_name`,
+    values
+  );
+  return rows;
+}
+
+async function getFilteredQuizBookletQuestionRows(studentId, examType, filters, limit) {
+  if (filters.topicKey) {
+    return await getQuizBookletQuestionRowsByTopic(studentId, examType, filters.topicKey, limit);
+  }
+  if (filters.branchKey) {
+    return await getQuizBookletQuestionRowsByBranch(studentId, examType, filters.branchKey, limit);
+  }
+  return await getQuizBookletQuestionRows(studentId, examType, filters.lessonKey, limit);
+}
+
+async function getQuizBookletQuestionRows(studentId, examType, lessonKey, limit) {
+  const { rows } = await query(
+    `SELECT
+       q.id,
+       q.test_id,
+       s.section_code,
+       s.section_name,
+       s.section_order,
+       q.section_question_number,
+       q.global_question_order,
+       q.image_path,
+       q.correct_answer,
+       q.choices,
+       q.lesson,
+       q.topic_name,
+       q.created_at,
+       bt.exam_type
+     FROM booklet_questions q
+     JOIN booklet_tests bt ON bt.id = q.test_id
+     JOIN booklet_sections s ON s.id = q.section_id
+     LEFT JOIN student_booklet_answers sba
+       ON sba.booklet_question_id = q.id AND sba.student_id = $3
+     WHERE bt.exam_type = $1
+       AND s.section_code = $2
+       AND sba.id IS NULL
+       AND q.image_path <> ''
+       AND q.correct_answer IS NOT NULL
+     ORDER BY random()
+     LIMIT $4`,
+    [examType, lessonKey, studentId, limit]
+  );
+  return rows;
+}
+
+async function getQuizBookletQuestionRowsByTopic(studentId, examType, topicKey, limit) {
+  const { lesson, topicName } = parseTopicKey(topicKey);
+  if (!lesson || !topicName) return [];
+
+  const { rows } = await query(
+    `SELECT
+       q.id,
+       q.test_id,
+       s.section_code,
+       s.section_name,
+       s.section_order,
+       q.section_question_number,
+       q.global_question_order,
+       q.image_path,
+       q.correct_answer,
+       q.choices,
+       q.lesson,
+       q.topic_name,
+       q.created_at,
+       bt.exam_type
+     FROM booklet_questions q
+     JOIN booklet_tests bt ON bt.id = q.test_id
+     JOIN booklet_sections s ON s.id = q.section_id
+     LEFT JOIN student_booklet_answers sba
+       ON sba.booklet_question_id = q.id AND sba.student_id = $4
+     WHERE bt.exam_type = $1
+       AND q.lesson = $2
+       AND q.topic_name = $3
+       AND sba.id IS NULL
+       AND q.image_path <> ''
+       AND q.correct_answer IS NOT NULL
+     ORDER BY random()
+     LIMIT $5`,
+    [examType, lesson, topicName, studentId, limit]
+  );
+  return rows;
+}
+
+async function getQuizBookletQuestionRowsByBranch(studentId, examType, branchKey, limit) {
+  const lesson = String(branchKey || '').trim();
+  if (!lesson) return [];
+
+  const { rows } = await query(
+    `SELECT
+       q.id,
+       q.test_id,
+       s.section_code,
+       s.section_name,
+       s.section_order,
+       q.section_question_number,
+       q.global_question_order,
+       q.image_path,
+       q.correct_answer,
+       q.choices,
+       q.lesson,
+       q.topic_name,
+       q.created_at,
+       bt.exam_type
+     FROM booklet_questions q
+     JOIN booklet_tests bt ON bt.id = q.test_id
+     JOIN booklet_sections s ON s.id = q.section_id
+     LEFT JOIN student_booklet_answers sba
+       ON sba.booklet_question_id = q.id AND sba.student_id = $3
+     WHERE bt.exam_type = $1
+       AND q.lesson = $2
+       AND sba.id IS NULL
+       AND q.image_path <> ''
+       AND q.correct_answer IS NOT NULL
+     ORDER BY random()
+     LIMIT $4`,
+    [examType, lesson, studentId, limit]
+  );
+  return rows;
+}
+
 async function getQuestionRows(studentId, filters = {}) {
   const conditions = ['q.student_id = $1'];
   const values = [studentId];
@@ -670,6 +1155,10 @@ async function getQuestionRows(studentId, filters = {}) {
   if (filters.id) {
     conditions.push(`q.id = $${n++}`);
     values.push(filters.id);
+  }
+  if (Array.isArray(filters.ids) && filters.ids.length) {
+    conditions.push(`q.id = ANY($${n++}::uuid[])`);
+    values.push(filters.ids);
   }
   if (filters.examType) {
     conditions.push(`q.exam_type = $${n++}`);
@@ -743,6 +1232,450 @@ function normalizeQuestionOptions(options = []) {
   return ['A', 'B', 'C', 'D', 'E']
     .map(key => optionMap.get(key))
     .filter(Boolean);
+}
+
+async function analyzeQuestionTagsWithGemini(questions) {
+  const endpoint =
+    'https://generativelanguage.googleapis.com/v1beta/models/' +
+    encodeURIComponent(GEMINI_MODEL) +
+    ':generateContent?key=' +
+    encodeURIComponent(GEMINI_API_KEY);
+
+  const response = await fetchGeminiWithTimeout(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: buildGeminiTagPrompt(questions) }] }],
+      generationConfig: {
+        temperature: 0.1,
+        responseMimeType: 'application/json',
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    let detail = '';
+    try {
+      const errorBody = await response.json();
+      detail = errorBody.error?.message || '';
+    } catch {
+      detail = await response.text();
+    }
+    throw httpError(response.status, 'Gemini etiketleme hatası: ' + (detail || response.statusText));
+  }
+
+  const data = await response.json();
+  const text = (data.candidates?.[0]?.content?.parts || [])
+    .map(part => part.text || '')
+    .join('\n')
+    .trim();
+  const parsed = parseJsonObject(text);
+  return Array.isArray(parsed?.tags) ? parsed.tags : [];
+}
+
+async function analyzeBookletQuestionTagsWithGemini(questions) {
+  const endpoint =
+    'https://generativelanguage.googleapis.com/v1beta/models/' +
+    encodeURIComponent(GEMINI_MODEL) +
+    ':generateContent?key=' +
+    encodeURIComponent(GEMINI_API_KEY);
+
+  const parts = [{ text: buildBookletGeminiTagPrompt(questions) }];
+  questions.forEach(question => {
+    parts.push({
+      text: 'Soru ID: ' + question.id + ', soru no: ' + (question.questionNo || '-') + ', bolum: ' + question.sectionName,
+    });
+    parts.push({
+      inlineData: {
+        mimeType: question.mimeType || 'image/png',
+        data: question.imageBase64,
+      },
+    });
+  });
+
+  const response = await fetchGeminiWithTimeout(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts }],
+      generationConfig: {
+        temperature: 0.1,
+        responseMimeType: 'application/json',
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    let detail = '';
+    try {
+      const errorBody = await response.json();
+      detail = errorBody.error?.message || '';
+    } catch {
+      detail = await response.text();
+    }
+    throw httpError(response.status, 'Gemini booklet tagleme hatası: ' + (detail || response.statusText));
+  }
+
+  const data = await response.json();
+  const text = (data.candidates?.[0]?.content?.parts || [])
+    .map(part => part.text || '')
+    .join('\n')
+    .trim();
+  const parsed = parseJsonObject(text);
+  return Array.isArray(parsed?.tags) ? parsed.tags : [];
+}
+
+async function fetchGeminiWithTimeout(endpoint, options) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+  try {
+    return await fetch(endpoint, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw httpError(504, 'Gemini ' + Math.round(GEMINI_TIMEOUT_MS / 1000) + ' saniye içinde yanıt vermedi. Model, API key veya sunucunun internet erişimini kontrol edin.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function buildBookletGeminiTagPrompt(questions) {
+  const allowedTopics = questions[0]?.allowedTopics || [];
+  const payload = questions.map(question => ({
+    id: question.id,
+    examType: question.examType,
+    sectionName: question.sectionName,
+    questionNo: question.questionNo,
+    correctOption: question.correctOption,
+    choices: question.choices,
+  }));
+
+  return [
+    'Sen Turkiye MEB lise/YKS mufredatina gore gorsel soru etiketleyen bir asistansin.',
+    'Her soru icin ONCE allowedTopics listesini oku.',
+    'lesson ve topicName alanlarini yalnizca allowedTopics listesindeki degerlerden birebir kopyala.',
+    'allowedTopics disinda ders veya konu uretme; emin degilsen listedeki en yakin ust konuyu sec ve confidence dusuk ver.',
+    'Soru metni gorselde olabilir; gorseli okuyup ders ve konuyu belirle.',
+    'track alanini selected allowedTopics kaydindaki track degeri olarak yaz.',
+    'difficulty 1-5 arasinda tam sayi olsun. confidence 0-1 arasinda sayi olsun.',
+    'Cevabinda allowedTopics disinda konu olursa sistem reddedecek.',
+    'Sadece su JSON semasinda yanit ver: {"tags":[{"id":"...","examType":"TYT|AYT|YDT","track":"tyt|sayisal|esit_agirlik|sozel|dil","lesson":"...","topicName":"...","difficulty":3,"confidence":0.8,"reason":"kisa neden"}]}',
+    'Allowed topics:',
+    JSON.stringify(allowedTopics),
+    'Soru metadata:',
+    JSON.stringify(payload),
+  ].join('\n');
+}
+
+async function mapBookletQuestionForGemini(row) {
+  const imagePath = normalizeBookletImagePath(row.image_path);
+  const filePath = path.resolve(getTestDir(row.test_id), imagePath);
+  let imageBase64 = '';
+  try {
+    imageBase64 = (await readFile(filePath)).toString('base64');
+  } catch {
+    imageBase64 = '';
+  }
+
+  return {
+    id: row.id,
+    examType: String(row.exam_type || 'TYT').toUpperCase(),
+    track: '',
+    lesson: row.lesson || '',
+    topicName: row.topic_name || '',
+    difficulty: row.difficulty || 3,
+    sectionName: row.section_name || row.section_code || '',
+    questionNo: row.section_question_number || row.global_question_order || null,
+    correctOption: row.correct_answer || '',
+    choices: Array.isArray(row.choices) ? row.choices : ['A', 'B', 'C', 'D', 'E'],
+    allowedTopics: getAllowedBookletTopics(
+      String(row.exam_type || 'TYT').toUpperCase(),
+      row.section_name || row.section_code || '',
+      row.section_question_number || row.global_question_order || null
+    ),
+    imageBase64,
+    mimeType: getImageMimeType(imagePath),
+  };
+}
+
+function getImageMimeType(filePath) {
+  const ext = path.extname(String(filePath || '')).toLowerCase();
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.webp') return 'image/webp';
+  return 'image/png';
+}
+
+function getAllowedBookletTopics(examType, sectionName = '', questionNo = null) {
+  const lessonFilter = inferBookletLessonFilter(examType, sectionName, questionNo);
+  if (examType === 'TYT') {
+    return flattenCurriculumTopics('TYT', ['tyt'], lessonFilter);
+  }
+
+  if (examType === 'AYT') {
+    return flattenCurriculumTopics('AYT', ['sayisal', 'esit_agirlik', 'sozel', 'dil'], lessonFilter);
+  }
+
+  if (examType === 'YDT') {
+    return flattenCurriculumTopics('YDT', ['dil'], lessonFilter);
+  }
+
+  return [];
+}
+
+function inferBookletLessonFilter(examType, sectionName, questionNo) {
+  const normalized = removeTurkishMarks(String(sectionName || '').toLowerCase());
+  const no = Number(questionNo || 0);
+
+  if (examType === 'TYT') {
+    if (normalized.includes('turkce')) return ['Türkçe'];
+    if (normalized.includes('matematik')) return ['Matematik'];
+    if (normalized.includes('fen')) {
+      if (no >= 1 && no <= 7) return ['Fizik'];
+      if (no >= 8 && no <= 14) return ['Kimya'];
+      if (no >= 15) return ['Biyoloji'];
+      return ['Fizik', 'Kimya', 'Biyoloji'];
+    }
+    if (normalized.includes('sosyal')) {
+      if (no >= 1 && no <= 5) return ['Tarih'];
+      if (no >= 6 && no <= 10) return ['Coğrafya'];
+      if (no >= 11 && no <= 15) return ['Felsefe'];
+      if (no >= 16) return ['Din Kültürü'];
+      return ['Tarih', 'Coğrafya', 'Felsefe', 'Din Kültürü'];
+    }
+  }
+
+  if (examType === 'AYT') {
+    if (normalized.includes('matematik')) return ['Matematik'];
+    if (normalized.includes('fen')) {
+      if (no >= 1 && no <= 14) return ['Fizik'];
+      if (no >= 15 && no <= 27) return ['Kimya'];
+      if (no >= 28) return ['Biyoloji'];
+      return ['Fizik', 'Kimya', 'Biyoloji'];
+    }
+    if (normalized.includes('sosyal') && normalized.includes('2')) {
+      if (no >= 1 && no <= 11) return ['Tarih-2'];
+      if (no >= 12 && no <= 17) return ['Coğrafya-2'];
+      if (no >= 18 && no <= 29) return ['Felsefe Grubu'];
+      if (no >= 40 && no <= 45) return ['Felsefe Grubu'];
+      if (no >= 30) return ['Din Kültürü'];
+      return ['Tarih-2', 'Coğrafya-2', 'Felsefe Grubu', 'Din Kültürü'];
+    }
+    if (normalized.includes('edebiyat') || normalized.includes('sosyal')) {
+      if (no >= 1 && no <= 24) return ['Türk Dili ve Edebiyatı'];
+      if (no >= 25 && no <= 34) return ['Tarih-1'];
+      if (no >= 35) return ['Coğrafya-1'];
+      return ['Türk Dili ve Edebiyatı', 'Tarih-1', 'Coğrafya-1'];
+    }
+  }
+
+  if (examType === 'YDT') return ['İngilizce', 'Almanca', 'Fransızca', 'Arapça'];
+  return null;
+}
+
+function flattenCurriculumTopics(examType, tracks, lessonFilter = null) {
+  const allowed = [];
+  const seen = new Set();
+
+  if (examType === 'TYT') {
+    for (const [lesson, topics] of Object.entries(CURRICULUM.TYT || {})) {
+      if (lessonFilter && !lessonFilter.includes(lesson)) continue;
+      for (const topicName of topics) {
+        const key = 'TYT|tyt|' + lesson + '|' + topicName;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        allowed.push({ examType: 'TYT', track: 'tyt', lesson, topicName });
+      }
+    }
+    return allowed;
+  }
+
+  const curriculumExamType = examType === 'YDT' ? 'AYT' : examType;
+  for (const track of tracks) {
+    const lessons = CURRICULUM[curriculumExamType]?.[track] || {};
+    for (const [lesson, topics] of Object.entries(lessons)) {
+      if (lessonFilter && !lessonFilter.includes(lesson)) continue;
+      for (const topicName of topics) {
+        const key = examType + '|' + track + '|' + lesson + '|' + topicName;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        allowed.push({ examType, track, lesson, topicName });
+      }
+    }
+  }
+
+  return allowed;
+}
+
+function normalizeBookletGeminiTag(raw, question) {
+  const lesson = String(raw.lesson || '').trim();
+  const topicName = String(raw.topicName || '').trim();
+  const confidence = Number(raw.confidence) || 0;
+  const difficulty = Math.min(Math.max(Number(raw.difficulty) || question.difficulty || 3, 1), 5);
+  const allowed = question.allowedTopics || [];
+  const match = findAllowedTopicMatch(lesson, topicName, allowed);
+
+  if (!match) {
+    return { valid: false, reason: 'Konu seçilen sınav türünün MEB/YKS konu listesinde yok: ' + lesson + ' / ' + topicName };
+  }
+  if (confidence < 0.35) {
+    return { valid: false, reason: 'Gemini güven skoru düşük.' };
+  }
+
+  return {
+    valid: true,
+    examType: match.examType,
+    track: match.track,
+    lesson: match.lesson,
+    topicName: match.topicName,
+    difficulty: Math.round(difficulty),
+    confidence,
+  };
+}
+
+function findAllowedTopicMatch(lesson, topicName, allowed) {
+  if (!allowed.length) return null;
+
+  const exact = allowed.find(item => item.lesson === lesson && item.topicName === topicName);
+  if (exact) return exact;
+
+  const normalizedLesson = normalizeMatchText(lesson);
+  const normalizedTopic = normalizeMatchText(topicName);
+  const lessonMatches = allowed.filter(item => normalizeMatchText(item.lesson) === normalizedLesson);
+  const candidates = lessonMatches.length ? lessonMatches : allowed;
+
+  const normalizedExact = candidates.find(item => normalizeMatchText(item.topicName) === normalizedTopic);
+  if (normalizedExact) return normalizedExact;
+
+  let best = null;
+  let bestScore = 0;
+  for (const item of candidates) {
+    const score = topicSimilarityScore(topicName, item.topicName);
+    if (score > bestScore) {
+      best = item;
+      bestScore = score;
+    }
+  }
+
+  if (best && bestScore >= 0.28) return best;
+
+  const uniqueLessons = new Set(allowed.map(item => item.lesson));
+  if (uniqueLessons.size === 1 && topicName) return candidates[0] || allowed[0];
+
+  return null;
+}
+
+function topicSimilarityScore(left, right) {
+  const leftWords = tokenizeTopic(left);
+  const rightWords = tokenizeTopic(right);
+  if (!leftWords.length || !rightWords.length) return 0;
+
+  let overlap = 0;
+  for (const leftWord of leftWords) {
+    if (rightWords.some(rightWord => rightWord === leftWord || rightWord.includes(leftWord) || leftWord.includes(rightWord))) {
+      overlap += 1;
+    }
+  }
+  return overlap / Math.max(leftWords.length, rightWords.length);
+}
+
+function normalizeMatchText(value) {
+  return removeTurkishMarks(String(value || '').toLowerCase())
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function buildGeminiTagPrompt(questions) {
+  const payload = questions.map(question => ({
+    id: question.id,
+    current: {
+      examType: question.examType,
+      track: question.track,
+      lesson: question.lesson,
+      topicName: question.topicName,
+      difficulty: question.difficulty,
+    },
+    questionNo: question.questionNo,
+    questionText: question.questionText,
+    options: (question.options || []).map(option => ({
+      key: option.optionKey,
+      text: option.optionText,
+    })),
+    correctOption: question.correctOption,
+    explanation: question.explanation,
+    sourceName: question.sourceName,
+    sourceYear: question.sourceYear,
+  }));
+
+  return [
+    'Sen Turkiye MEB lise/YKS mufredatina gore soru etiketleyen bir asistansin.',
+    'Her soru icin yalnizca verilen mufredat listesindeki examType, track, lesson ve topicName degerlerinden secim yap.',
+    'TYT icin track alaninda sorunun mevcut track degerini koruyabilirsin. AYT icin track mutlaka mufredatta olan alanlardan biri olmali.',
+    'difficulty 1-5 arasinda tam sayi olsun. confidence 0-1 arasinda sayi olsun.',
+    'Emin degilsen en yakin ust konuya secim yap, fakat confidence 0.55 altina dusuyorsa belirt.',
+    'Sadece su JSON semasinda yanit ver: {"tags":[{"id":"...","examType":"TYT|AYT","track":"sayisal|esit_agirlik|sozel|dil","lesson":"...","topicName":"...","difficulty":3,"confidence":0.8,"reason":"kisa neden"}]}',
+    'Mufredat:',
+    JSON.stringify(CURRICULUM),
+    'Sorular:',
+    JSON.stringify(payload),
+  ].join('\n');
+}
+
+function parseJsonObject(text) {
+  const cleaned = String(text || '')
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      return JSON.parse(cleaned.slice(start, end + 1));
+    }
+    throw httpError(502, 'Gemini yanıtı JSON olarak okunamadı.');
+  }
+}
+
+function normalizeGeminiTag(raw, question) {
+  const examType = String(raw.examType || question.examType || 'TYT').toUpperCase();
+  const track = String(raw.track || question.track || 'sayisal');
+  const lesson = String(raw.lesson || '').trim();
+  const topicName = String(raw.topicName || '').trim();
+  const difficulty = Math.min(Math.max(Number(raw.difficulty) || question.difficulty || 3, 1), 5);
+  const confidence = Number(raw.confidence) || 0;
+
+  if (!['TYT', 'AYT'].includes(examType)) {
+    return { valid: false, reason: 'Geçersiz sınav türü.' };
+  }
+  if (confidence < 0.55) {
+    return { valid: false, reason: 'Gemini güven skoru düşük.' };
+  }
+
+  const validTopics = getCurriculumTopics(examType, track, lesson);
+  if (!validTopics.length) {
+    return { valid: false, reason: 'Ders müfredatta bulunamadı.' };
+  }
+  if (!validTopics.includes(topicName)) {
+    return { valid: false, reason: 'Konu müfredatta bulunamadı.' };
+  }
+
+  return {
+    valid: true,
+    examType,
+    track,
+    lesson,
+    topicName,
+    difficulty: Math.round(difficulty),
+    confidence,
+  };
+}
+
+function getCurriculumTopics(examType, track, lesson) {
+  if (examType === 'TYT') return CURRICULUM.TYT[lesson] || [];
+  return CURRICULUM.AYT[track]?.[lesson] || [];
 }
 
 async function extractQuestionsWithOcr(req, res) {
@@ -986,13 +1919,23 @@ async function getBookletTest(testId, res) {
   return sendJson(res, 200, mapBookletTest(rows[0]));
 }
 
+async function deleteBookletTest(testId, res) {
+  const { rows } = await query('DELETE FROM booklet_tests WHERE id = $1 RETURNING id', [testId]);
+  if (!rows.length) return sendJson(res, 404, { error: 'Test bulunamadı.' });
+  await rm(getTestDir(testId), { recursive: true, force: true });
+  return sendJson(res, 200, { success: true });
+}
+
 async function createBookletTest(req, res) {
   const body = await readJsonBody(req);
   const title = String(body.title || '').trim();
-  const examType = String(body.examType || '').trim();
+  const examType = String(body.examType || '').trim().toUpperCase();
   const bookletType = String(body.bookletType || '').trim();
 
   if (!title) return sendJson(res, 400, { error: 'Test başlığı gereklidir.' });
+  if (!BOOKLET_EXAM_TYPES.includes(examType)) {
+    return sendJson(res, 400, { error: 'Geçerli sınav türü seçiniz.' });
+  }
 
   const { rows } = await query(
     `INSERT INTO booklet_tests (title, exam_type, booklet_type, status)
@@ -1177,16 +2120,185 @@ async function applyBookletAnswerKey(testId, req, res) {
   });
 }
 
+async function autoTagBookletTest(testId, req, res) {
+  if (!GEMINI_API_KEY) {
+    return sendJson(res, 503, { error: 'Gemini API anahtarı tanımlı değil. GEMINI_API_KEY env variable ekleyin.' });
+  }
+
+  const startedAt = Date.now();
+  console.log(`Gemini booklet auto-tag started testId=${testId} model=${GEMINI_MODEL}`);
+  await ensureBookletTestExists(testId);
+  const body = await readJsonBody(req);
+  const overwrite = body.overwrite === true;
+  const limit = Math.min(Math.max(Number(body.limit) || 10, 1), 25);
+  const batchSize = Math.min(Math.max(Number(body.batchSize) || 1, 1), 3);
+  const excludeIds = new Set(
+    Array.isArray(body.excludeQuestionIds)
+      ? body.excludeQuestionIds.map(id => String(id)).filter(Boolean)
+      : []
+  );
+
+  const { rows: testRows } = await query('SELECT id, exam_type FROM booklet_tests WHERE id = $1', [testId]);
+  const examType = String(testRows[0]?.exam_type || '').toUpperCase();
+  if (!['TYT', 'AYT', 'YDT'].includes(examType)) {
+    return sendJson(res, 400, { error: 'Gemini tagleme sadece TYT/AYT/YDT booklet testleri için desteklenir.' });
+  }
+
+  const { rows } = await query(
+    `SELECT q.id, q.test_id, q.section_question_number, q.global_question_order, q.image_path,
+            q.correct_answer, q.choices, q.lesson, q.topic_name, q.difficulty,
+            s.section_code, s.section_name, s.section_order, bt.exam_type
+     FROM booklet_questions q
+     JOIN booklet_tests bt ON bt.id = q.test_id
+     JOIN booklet_sections s ON s.id = q.section_id
+     WHERE q.test_id = $1
+     ORDER BY q.global_question_order`,
+    [testId]
+  );
+
+  const pendingRows = rows
+    .filter(row => overwrite || !row.lesson || !row.topic_name)
+    .filter(row => !excludeIds.has(String(row.id)));
+  const candidateRows = pendingRows.slice(0, limit);
+  const candidates = [];
+  const unreadable = [];
+  for (const row of candidateRows) {
+    const mapped = await mapBookletQuestionForGemini(row);
+    if (mapped.imageBase64) {
+      candidates.push(mapped);
+    } else {
+      unreadable.push(row.id);
+    }
+  }
+
+  if (!candidates.length) {
+    console.log(`Gemini booklet auto-tag skipped testId=${testId} no readable candidates`);
+    const remaining = overwrite
+      ? Math.max(pendingRows.length - candidateRows.length, 0)
+      : await countUntaggedBookletQuestions(testId);
+    return sendJson(res, 200, {
+      success: true,
+      analyzed: 0,
+      updated: 0,
+      skipped: unreadable.length,
+      remaining,
+      hasMore: remaining > 0,
+      results: unreadable.map(id => ({ id, updated: false, reason: 'Soru görseli okunamadı.' })),
+    });
+  }
+
+  const questionById = new Map(candidates.map(question => [question.id, question]));
+  const results = [];
+  let updated = 0;
+  for (let index = 0; index < candidates.length; index += batchSize) {
+    const batch = candidates.slice(index, index + batchSize);
+    console.log(`Gemini booklet auto-tag batch testId=${testId} offset=${index} size=${batch.length}`);
+    let analyzed = [];
+    try {
+      analyzed = await analyzeBookletQuestionTagsWithRetry(batch);
+    } catch (error) {
+      const message = error.expose ? error.message : 'Gemini batch işlenemedi.';
+      console.warn(`Gemini booklet auto-tag batch failed testId=${testId} offset=${index}: ${message}`);
+      results.push(...batch.map(question => ({ id: question.id, updated: false, reason: message })));
+      continue;
+    }
+    for (const raw of analyzed) {
+      const question = questionById.get(String(raw.id || ''));
+      if (!question) continue;
+
+      const normalized = normalizeBookletGeminiTag(raw, question);
+      if (!normalized.valid) {
+        results.push({ id: question.id, updated: false, reason: normalized.reason });
+        continue;
+      }
+
+      await query(
+        `UPDATE booklet_questions
+         SET lesson = $1, topic_name = $2, topic_confidence = $3, difficulty = $4
+         WHERE id = $5 AND test_id = $6`,
+        [
+          normalized.lesson,
+          normalized.topicName,
+          normalized.confidence,
+          normalized.difficulty,
+          question.id,
+          testId,
+        ]
+      );
+      updated += 1;
+      results.push({
+        id: question.id,
+        updated: true,
+        lesson: normalized.lesson,
+        topicName: normalized.topicName,
+        difficulty: normalized.difficulty,
+        confidence: normalized.confidence,
+      });
+    }
+    const returnedIds = new Set(analyzed.map(raw => String(raw.id || '')).filter(Boolean));
+    for (const question of batch) {
+      if (!returnedIds.has(question.id)) {
+        results.push({ id: question.id, updated: false, reason: 'Gemini bu soru için tag döndürmedi.' });
+      }
+    }
+    console.log(`Gemini booklet auto-tag batch done testId=${testId} offset=${index} updated=${updated}`);
+  }
+
+  const remaining = overwrite
+    ? Math.max(pendingRows.length - candidateRows.length, 0)
+    : await countUntaggedBookletQuestions(testId);
+  console.log(`Gemini booklet auto-tag completed testId=${testId} analyzed=${candidates.length} updated=${updated} remaining=${remaining} ms=${Date.now() - startedAt}`);
+  return sendJson(res, 200, {
+    success: true,
+    analyzed: candidates.length,
+    updated,
+    skipped: results.filter(result => !result.updated).length + unreadable.length,
+    remaining,
+    hasMore: remaining > 0,
+    results,
+  });
+}
+
+async function countUntaggedBookletQuestions(testId) {
+  const { rows } = await query(
+    `SELECT COUNT(*)::int AS count
+     FROM booklet_questions
+     WHERE test_id = $1
+       AND (coalesce(lesson, '') = '' OR coalesce(topic_name, '') = '')`,
+    [testId]
+  );
+  return Number(rows[0]?.count || 0);
+}
+
+async function analyzeBookletQuestionTagsWithRetry(batch) {
+  const maxAttempts = 3;
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await analyzeBookletQuestionTagsWithGemini(batch);
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableGeminiError(error) || attempt === maxAttempts) break;
+      await sleep(1500 * attempt);
+    }
+  }
+  throw lastError;
+}
+
+function isRetryableGeminiError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return error?.statusCode === 429 ||
+    error?.statusCode === 503 ||
+    message.includes('high demand') ||
+    message.includes('try again') ||
+    message.includes('timeout') ||
+    message.includes('saniye içinde yanıt vermedi');
+}
+
 async function finalizeBookletTest(testId, res) {
   await ensureBookletTestExists(testId);
   const review = await readReview(testId);
-  const active = review.detections
-    .filter(item => !item.deleted && item.sectionQuestionNumber)
-    .sort(sortReviewQuestions)
-    .map((question, index) => ({
-      ...question,
-      globalQuestionOrder: question.globalQuestionOrder || (index + 1),
-    }));
+  const active = getActiveReviewQuestions(review);
   const duplicates = findDuplicateSectionQuestions(active);
   if (duplicates.length) {
     return sendJson(res, 400, { error: 'Aynı bölüm içinde tekrar eden soru numaraları var: ' + duplicates.join(', ') });
@@ -1195,33 +2307,7 @@ async function finalizeBookletTest(testId, res) {
   const client = await getClient();
   try {
     await client.query('BEGIN');
-    await client.query('DELETE FROM booklet_sections WHERE test_id = $1', [testId]);
-    await client.query('DELETE FROM booklet_questions WHERE test_id = $1', [testId]);
-    const sectionIdByCode = new Map();
-    for (const section of buildPersistedSections(review, active)) {
-      const { rows } = await client.query(
-        `INSERT INTO booklet_sections (test_id, section_code, section_name, section_order, start_page, end_page)
-         VALUES ($1,$2,$3,$4,$5,$6)
-         RETURNING id`,
-        [testId, section.sectionCode, section.sectionName, section.sectionOrder, section.startPage || null, section.endPage || null]
-      );
-      sectionIdByCode.set(section.sectionCode, rows[0].id);
-    }
-    for (const question of active) {
-      await client.query(
-        `INSERT INTO booklet_questions (test_id, section_id, section_question_number, global_question_order, image_path, correct_answer, choices)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [
-          testId,
-          sectionIdByCode.get(question.sectionCode),
-          question.sectionQuestionNumber,
-          question.globalQuestionOrder,
-          toAssetUrl(testId, question.imagePath),
-          question.correctAnswer || null,
-          JSON.stringify(question.choices || ['A', 'B', 'C', 'D', 'E']),
-        ]
-      );
-    }
+    await persistBookletReviewSnapshot(client, testId, review, active);
     await client.query('UPDATE booklet_tests SET status = $1 WHERE id = $2', ['finalized', testId]);
     await client.query('COMMIT');
   } catch (error) {
@@ -1238,7 +2324,8 @@ async function getBookletQuestions(testId, res) {
   await ensureBookletTestExists(testId);
   const { rows } = await query(
     `SELECT q.id, q.test_id, q.section_id, s.section_code, s.section_name, s.section_order,
-            q.section_question_number, q.global_question_order, q.image_path, q.correct_answer, q.choices, q.created_at
+            q.section_question_number, q.global_question_order, q.image_path, q.correct_answer,
+            q.choices, q.lesson, q.topic_name, q.topic_confidence, q.difficulty, q.created_at
      FROM booklet_questions q
      JOIN booklet_sections s ON s.id = q.section_id
      WHERE q.test_id = $1
@@ -1246,6 +2333,16 @@ async function getBookletQuestions(testId, res) {
     [testId]
   );
   return sendJson(res, 200, rows.map(mapBookletQuestion));
+}
+
+async function deleteBookletQuestion(testId, questionId, res) {
+  await ensureBookletTestExists(testId);
+  const { rows } = await query(
+    'DELETE FROM booklet_questions WHERE id = $1 AND test_id = $2 RETURNING id',
+    [questionId, testId]
+  );
+  if (!rows.length) return sendJson(res, 404, { error: 'Soru bulunamadı.' });
+  return sendJson(res, 200, { success: true });
 }
 
 async function getBookletAsset(testId, relativePath, res) {
@@ -1370,6 +2467,203 @@ function buildPersistedSections(review, activeQuestions) {
     section.endPage = section.endPage ? Math.max(section.endPage, question.pageNumber) : question.pageNumber;
   }
   return [...sections.values()].sort((left, right) => left.sectionOrder - right.sectionOrder);
+}
+
+function getActiveReviewQuestions(review) {
+  return (review.detections || [])
+    .filter(item => !item.deleted && item.sectionQuestionNumber)
+    .sort(sortReviewQuestions)
+    .map((question, index) => ({
+      ...question,
+      globalQuestionOrder: question.globalQuestionOrder || (index + 1),
+    }));
+}
+
+function dedupeReviewSectionQuestions(activeQuestions) {
+  const bestByKey = new Map();
+  for (const question of activeQuestions) {
+    const key = String(question.sectionCode || 'main') + ':' + String(question.sectionQuestionNumber || '');
+    const existing = bestByKey.get(key);
+    if (!existing) {
+      bestByKey.set(key, question);
+      continue;
+    }
+
+    const existingAnswered = normalizeAnswerOption(existing.correctAnswer) ? 1 : 0;
+    const nextAnswered = normalizeAnswerOption(question.correctAnswer) ? 1 : 0;
+    const existingConfidence = Number(existing.confidenceScore || 0);
+    const nextConfidence = Number(question.confidenceScore || 0);
+    if (nextAnswered > existingAnswered || (nextAnswered === existingAnswered && nextConfidence >= existingConfidence)) {
+      bestByKey.set(key, question);
+    }
+  }
+
+  return [...bestByKey.values()]
+    .sort(sortReviewQuestions)
+    .map((question, index) => ({
+      ...question,
+      globalQuestionOrder: index + 1,
+    }));
+}
+
+async function persistBookletReviewSnapshot(client, testId, review, activeQuestions = getActiveReviewQuestions(review)) {
+  await client.query('DELETE FROM booklet_sections WHERE test_id = $1', [testId]);
+  await client.query('DELETE FROM booklet_questions WHERE test_id = $1', [testId]);
+
+  const sectionIdByCode = new Map();
+  for (const section of buildPersistedSections(review, activeQuestions)) {
+    const { rows } = await client.query(
+      `INSERT INTO booklet_sections (test_id, section_code, section_name, section_order, start_page, end_page)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       RETURNING id`,
+      [testId, section.sectionCode, section.sectionName, section.sectionOrder, section.startPage || null, section.endPage || null]
+    );
+    sectionIdByCode.set(section.sectionCode, rows[0].id);
+  }
+
+  for (const question of activeQuestions) {
+    await client.query(
+      `INSERT INTO booklet_questions (test_id, section_id, section_question_number, global_question_order, image_path, correct_answer, choices)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        testId,
+        sectionIdByCode.get(question.sectionCode),
+        question.sectionQuestionNumber,
+        question.globalQuestionOrder,
+        normalizeBookletImagePath(question.imagePath),
+        normalizeAnswerOption(question.correctAnswer),
+        JSON.stringify(question.choices || ['A', 'B', 'C', 'D', 'E']),
+      ]
+    );
+  }
+}
+
+function normalizeBookletImagePath(imagePath) {
+  const value = String(imagePath || '').trim();
+  if (!value) return '';
+  const match = value.match(/^\/api\/admin\/booklet-tests\/[^/]+\/assets\/(.+)$/);
+  return match ? match[1] : value.replace(/^\/+/, '');
+}
+
+function resolveBookletImageUrl(testId, imagePath) {
+  const value = String(imagePath || '').trim();
+  if (!value) return '';
+  if (/^(https?:)?\/\//.test(value) || value.startsWith('/api/')) return value;
+  return toAssetUrl(testId, value);
+}
+
+function normalizeAnswerOption(value) {
+  const normalized = String(value || '').trim().toUpperCase();
+  return ['A', 'B', 'C', 'D', 'E'].includes(normalized) ? normalized : null;
+}
+
+async function syncBookletQuizInventory(force = false) {
+  const now = Date.now();
+  if (!force && bookletQuizSyncState.promise) return bookletQuizSyncState.promise;
+  if (!force && now - bookletQuizSyncState.completedAt < BOOKLET_QUIZ_SYNC_TTL_MS) return;
+  if (bookletQuizSyncState.promise) return bookletQuizSyncState.promise;
+
+  bookletQuizSyncState.promise = (async () => {
+    await ensureRecoveredBookletTestsFromStorage();
+    const { rows: tests } = await query('SELECT id FROM booklet_tests');
+    for (const test of tests) {
+      try {
+        const review = await readReview(test.id);
+        const active = dedupeReviewSectionQuestions(getActiveReviewQuestions(review));
+        if (!active.length) continue;
+
+        const expectedAnsweredCount = active.reduce((count, question) => (
+          count + (normalizeAnswerOption(question.correctAnswer) ? 1 : 0)
+        ), 0);
+
+        const {
+          rows: [stats],
+        } = await query(
+          `SELECT
+             COUNT(*)::int AS question_count,
+             COUNT(*) FILTER (WHERE correct_answer IS NOT NULL)::int AS answered_count,
+             COUNT(*) FILTER (WHERE image_path LIKE '/api/%')::int AS absolute_path_count
+           FROM booklet_questions
+           WHERE test_id = $1`,
+          [test.id]
+        );
+
+        const shouldSync =
+          Number(stats?.question_count || 0) !== active.length ||
+          Number(stats?.answered_count || 0) !== expectedAnsweredCount ||
+          Number(stats?.absolute_path_count || 0) > 0;
+
+        if (!shouldSync) continue;
+
+        const client = await getClient();
+        try {
+          await client.query('BEGIN');
+          await persistBookletReviewSnapshot(client, test.id, review, active);
+          await client.query('COMMIT');
+        } catch (error) {
+          await client.query('ROLLBACK');
+          throw error;
+        } finally {
+          client.release();
+        }
+      } catch (error) {
+        console.warn(`Skipping booklet sync for ${test.id}: ${error.message}`);
+      }
+    }
+  })();
+
+  try {
+    await bookletQuizSyncState.promise;
+    bookletQuizSyncState.completedAt = Date.now();
+  } finally {
+    bookletQuizSyncState.promise = null;
+  }
+}
+
+async function ensureRecoveredBookletTestsFromStorage() {
+  let entries = [];
+  try {
+    entries = await readdir(getBookletStorageRoot(), { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  const { rows } = await query('SELECT id FROM booklet_tests');
+  const existingIds = new Set(rows.map(row => row.id));
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const testId = entry.name;
+    if (existingIds.has(testId)) continue;
+
+    try {
+      const review = await readReview(testId);
+      const examType = normalizeRecoveredExamType(review.examType);
+      if (!examType) continue;
+      await query(
+        `INSERT INTO booklet_tests (id, title, exam_type, booklet_type, pdf_path, review_path, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (id) DO NOTHING`,
+        [
+          testId,
+          String(review.title || `${examType} recovered test`).trim(),
+          examType,
+          String(review.bookletType || '').trim(),
+          '',
+          getReviewPath(testId),
+          String(review.status || 'review').trim() || 'review',
+        ]
+      );
+      existingIds.add(testId);
+    } catch (error) {
+      console.warn(`Skipping recovered booklet test ${testId}: ${error.message}`);
+    }
+  }
+}
+
+function normalizeRecoveredExamType(value) {
+  const normalized = String(value || '').trim().toUpperCase();
+  return BOOKLET_EXAM_TYPES.includes(normalized) ? normalized : '';
 }
 
 function parseStructuredAnswerKeyText(rawText, sections) {
@@ -1740,6 +3034,10 @@ async function readJsonBody(req) {
   }
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function hashPassword(password) {
   const salt = randomBytes(16).toString('hex');
   const derivedKey = await scrypt(password, salt, 64);
@@ -1775,7 +3073,20 @@ function mapExam(row) {
 function mapExams(rows) { return rows.map(mapExam); }
 
 function mapTopic(row) {
-  return { id: row.id, examId: row.exam_id, studentId: row.student_id, name: row.name, weight: row.weight, selfAssessment: row.self_assessment, estimatedMinutes: row.estimated_minutes, completedMinutes: row.completed_minutes, createdAt: row.created_at };
+  return {
+    id: row.id,
+    examId: row.exam_id,
+    studentId: row.student_id,
+    name: row.name,
+    examType: row.exam_type,
+    track: row.track,
+    lesson: row.lesson,
+    weight: row.weight,
+    selfAssessment: row.self_assessment,
+    estimatedMinutes: row.estimated_minutes,
+    completedMinutes: row.completed_minutes,
+    createdAt: row.created_at
+  };
 }
 function mapTopics(rows) { return rows.map(mapTopic); }
 
@@ -1823,6 +3134,65 @@ function mapQuestionAnswer(row) {
 }
 function mapQuestionAnswers(rows) { return rows.map(mapQuestionAnswer); }
 
+function mapQuizBookletLesson(row) {
+  return {
+    lessonKey: row.section_code || '',
+    lessonName: row.section_name || row.section_code || '',
+    availableCount: Number(row.available_count || 0),
+  };
+}
+
+function makeTopicKey(lesson, topicName) {
+  return String(lesson || '') + '|||' + String(topicName || '');
+}
+
+function parseTopicKey(topicKey) {
+  const parts = String(topicKey || '').split('|||');
+  return {
+    lesson: String(parts[0] || '').trim(),
+    topicName: String(parts.slice(1).join('|||') || '').trim(),
+  };
+}
+
+function mapQuizBookletTopic(row) {
+  return {
+    topicKey: makeTopicKey(row.lesson, row.topic_name),
+    examType: row.exam_type || '',
+    lesson: row.lesson || '',
+    topicName: row.topic_name || '',
+    availableCount: Number(row.available_count || 0),
+    totalCount: Number(row.total_count || 0),
+  };
+}
+
+function mapQuizBookletBranch(row) {
+  return {
+    branchKey: row.lesson || '',
+    examType: row.exam_type || '',
+    lesson: row.lesson || '',
+    availableCount: Number(row.available_count || 0),
+    totalCount: Number(row.total_count || 0),
+  };
+}
+
+function mapBookletTopicStat(row) {
+  const answeredCount = Number(row.answered_count || 0);
+  const correctCount = Number(row.correct_count || 0);
+  const wrongCount = Number(row.wrong_count || 0);
+  return {
+    topicKey: makeTopicKey(row.lesson, row.topic_name),
+    examType: row.exam_type || '',
+    lesson: row.lesson || '',
+    topicName: row.topic_name || '',
+    totalCount: Number(row.total_count || 0),
+    availableCount: Number(row.available_count || 0),
+    answeredCount,
+    correctCount,
+    wrongCount,
+    successRate: answeredCount ? Math.round((correctCount / answeredCount) * 1000) / 10 : null,
+  };
+}
+
 function mapAdminImport(row) {
   return {
     id: row.id,
@@ -1858,10 +3228,44 @@ function mapBookletQuestion(row) {
     sectionOrder: row.section_order || 1,
     sectionQuestionNumber: row.section_question_number,
     globalQuestionOrder: row.global_question_order,
-    imagePath: row.image_path,
+    imagePath: resolveBookletImageUrl(row.test_id, row.image_path),
     correctAnswer: row.correct_answer || '',
     choices: Array.isArray(row.choices) ? row.choices : ['A', 'B', 'C', 'D', 'E'],
+    lesson: row.lesson || '',
+    topicName: row.topic_name || '',
+    topicConfidence: Number(row.topic_confidence || 0),
+    difficulty: row.difficulty || 3,
     createdAt: row.created_at,
+  };
+}
+
+function mapQuizBookletQuestion(row) {
+  return {
+    id: row.id,
+    testId: row.test_id,
+    examType: row.exam_type,
+    lessonKey: row.section_code || '',
+    lessonName: row.section_name || '',
+    lessonOrder: row.section_order || 1,
+    questionNo: row.section_question_number || row.global_question_order || null,
+    globalQuestionOrder: row.global_question_order || null,
+    questionImageUrl: resolveBookletImageUrl(row.test_id, row.image_path),
+    choices: Array.isArray(row.choices) ? row.choices : ['A', 'B', 'C', 'D', 'E'],
+    correctAnswer: row.correct_answer || '',
+    lesson: row.lesson || '',
+    topicName: row.topic_name || '',
+    createdAt: row.created_at,
+  };
+}
+
+function mapBookletQuizAnswer(row) {
+  return {
+    id: row.id,
+    studentId: row.student_id,
+    bookletQuestionId: row.booklet_question_id,
+    selectedOption: row.selected_option,
+    isCorrect: row.is_correct,
+    answeredAt: row.answered_at,
   };
 }
 
@@ -1905,6 +3309,11 @@ startServer();
 async function startServer() {
   try {
     await ensureQuestionSchemaWithRetry();
+    try {
+      await syncBookletQuizInventory();
+    } catch (error) {
+      console.warn('Booklet quiz inventory sync skipped:', error.message);
+    }
     server.listen(PORT, () => {
       console.log(`API server listening on http://localhost:${PORT}`);
     });
@@ -1934,6 +3343,9 @@ async function ensureQuestionSchemaWithRetry() {
 async function ensureQuestionSchema() {
   // Drop strict birthdate-age consistency constraint that causes registration failures
   try { await query('ALTER TABLE students DROP CONSTRAINT IF EXISTS chk_age_birth'); } catch (e) {}
+  await query(`ALTER TABLE topics ADD COLUMN IF NOT EXISTS exam_type VARCHAR(10) NOT NULL DEFAULT 'TYT'`);
+  await query(`ALTER TABLE topics ADD COLUMN IF NOT EXISTS track VARCHAR(20) NOT NULL DEFAULT 'sayisal'`);
+  await query(`ALTER TABLE topics ADD COLUMN IF NOT EXISTS lesson VARCHAR(100) NOT NULL DEFAULT ''`);
   await query(`
     CREATE TABLE IF NOT EXISTS questions (
       id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -2065,14 +3477,36 @@ async function ensureQuestionSchema() {
       image_path              TEXT        NOT NULL,
       correct_answer          CHAR(1)     CHECK (correct_answer IN ('A','B','C','D','E')),
       choices                 JSONB       NOT NULL DEFAULT '["A","B","C","D","E"]'::jsonb,
+      lesson                  VARCHAR(100) NOT NULL DEFAULT '',
+      topic_name              VARCHAR(255) NOT NULL DEFAULT '',
+      topic_confidence        NUMERIC(4,3) NOT NULL DEFAULT 0,
+      difficulty              SMALLINT    NOT NULL DEFAULT 3 CHECK (difficulty BETWEEN 1 AND 5),
       created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
     )
   `);
   await query('ALTER TABLE booklet_questions ADD COLUMN IF NOT EXISTS section_id UUID REFERENCES booklet_sections(id) ON DELETE CASCADE');
   await query('ALTER TABLE booklet_questions ADD COLUMN IF NOT EXISTS section_question_number INT');
   await query('ALTER TABLE booklet_questions ADD COLUMN IF NOT EXISTS global_question_order INT');
+  await query("ALTER TABLE booklet_questions ADD COLUMN IF NOT EXISTS lesson VARCHAR(100) NOT NULL DEFAULT ''");
+  await query("ALTER TABLE booklet_questions ADD COLUMN IF NOT EXISTS topic_name VARCHAR(255) NOT NULL DEFAULT ''");
+  await query('ALTER TABLE booklet_questions ADD COLUMN IF NOT EXISTS topic_confidence NUMERIC(4,3) NOT NULL DEFAULT 0');
+  await query('ALTER TABLE booklet_questions ADD COLUMN IF NOT EXISTS difficulty SMALLINT NOT NULL DEFAULT 3');
   try { await query('ALTER TABLE booklet_questions DROP CONSTRAINT IF EXISTS booklet_questions_test_id_question_number_key'); } catch {}
   await query('CREATE INDEX IF NOT EXISTS idx_booklet_questions_test ON booklet_questions (test_id, global_question_order)');
+  await query('CREATE INDEX IF NOT EXISTS idx_booklet_questions_topic ON booklet_questions (test_id, lesson, topic_name)');
   await query('CREATE UNIQUE INDEX IF NOT EXISTS idx_booklet_questions_section_unique ON booklet_questions (test_id, section_id, section_question_number) WHERE section_id IS NOT NULL AND section_question_number IS NOT NULL');
   await query('CREATE UNIQUE INDEX IF NOT EXISTS idx_booklet_questions_global_unique ON booklet_questions (test_id, global_question_order) WHERE global_question_order IS NOT NULL');
+  await query(`
+    CREATE TABLE IF NOT EXISTS student_booklet_answers (
+      id                 UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      student_id         UUID        NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+      booklet_question_id UUID       NOT NULL REFERENCES booklet_questions(id) ON DELETE CASCADE,
+      selected_option    CHAR(1)     NOT NULL CHECK (selected_option IN ('A','B','C','D','E')),
+      is_correct         BOOLEAN     NOT NULL,
+      answered_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (student_id, booklet_question_id)
+    )
+  `);
+  await query('CREATE INDEX IF NOT EXISTS idx_student_booklet_answers_student ON student_booklet_answers (student_id)');
+  await query('CREATE INDEX IF NOT EXISTS idx_student_booklet_answers_question ON student_booklet_answers (booklet_question_id)');
 }

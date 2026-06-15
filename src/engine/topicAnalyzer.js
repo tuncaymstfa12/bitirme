@@ -182,8 +182,7 @@ export function identifyUncoveredTopics(questions, curriculum, examType, lesson)
 }
 
 /**
- * Build a simple weakness table (wrong-rate focused) for question bank display.
- * Legacy-compatible replacement for the inline buildWeakRows in questionBank.js.
+ * Build a simple weakness table (wrong-rate focused) for question analysis display.
  */
 export function buildWeakRows(questions, answers) {
   const questionMap = new Map(questions.map(q => [q.id, q]));

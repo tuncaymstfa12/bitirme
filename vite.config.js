@@ -1,7 +1,9 @@
 import { defineConfig } from 'vite';
 
 const frontendPort = Number(process.env.FRONTEND_PORT || 4173);
-const backendPort = Number(process.env.BACKEND_PORT || 8100);
+const backendPort = Number(
+  process.env.BACKEND_PORT || 8000
+);
 
 export default defineConfig({
   server: {

@@ -1,8 +1,11 @@
 import {
   applyBookletAnswerKey,
+  autoTagBookletTest,
   createBookletReviewQuestion,
   createBookletTest,
+  deleteBookletTest,
   deleteBookletReviewQuestion,
+  deleteFinalBookletQuestion,
   finalizeBookletTest,
   getBookletReview,
   getBookletTests,
@@ -18,7 +21,7 @@ export async function renderAdminImport(container) {
     '<div class="card" style="padding:var(--space-md);margin-bottom:var(--space-xl);">',
     '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:var(--space-md);">',
     '<div class="form-group"><label class="form-label">Test Basligi</label><input class="form-input" id="booklet-title" placeholder="TYT Deneme 1"></div>',
-    '<div class="form-group"><label class="form-label">Sinav Turu</label><select class="form-select" id="booklet-exam-type"><option value="TYT">TYT</option><option value="AYT">AYT</option></select></div>',
+    '<div class="form-group"><label class="form-label">Sinav Turu</label><select class="form-select" id="booklet-exam-type"><option value="TYT">TYT</option><option value="AYT">AYT</option><option value="YDT">YDT</option></select></div>',
     '<div class="form-group"><label class="form-label">Kitapcik Turu</label><input class="form-input" id="booklet-booklet-type" placeholder="A"></div>',
     '<div class="form-group"><label class="form-label">PDF</label><input class="form-input" id="booklet-file" type="file" accept=".pdf"></div>',
     '</div>',
@@ -91,6 +94,18 @@ async function loadTests(container, selectedTestId = null) {
     testList.querySelectorAll('.booklet-open-btn').forEach(button => {
       button.addEventListener('click', () => loadTests(container, button.dataset.testId));
     });
+    testList.querySelectorAll('.booklet-delete-test-btn').forEach(button => {
+      button.addEventListener('click', async () => {
+        if (!confirm('Bu testi ve kayitli sorularini silmek istiyor musunuz?')) return;
+        try {
+          await deleteBookletTest(button.dataset.testId);
+          showToast({ title: 'Test silindi', message: 'Import testi kaldirildi.', type: 'info' });
+          await loadTests(container);
+        } catch (error) {
+          showToast({ title: 'Silme hatasi', message: error.message, type: 'error' });
+        }
+      });
+    });
 
     await loadReview(container, activeId);
   } catch (error) {
@@ -107,7 +122,10 @@ function renderTestRow(test, isActive) {
     '<div style="font-weight:650;">' + escapeHtml(test.title) + '</div>',
     '<div style="font-size:var(--font-xs);color:var(--text-tertiary);">' + escapeHtml(test.examType || '-') + ' · ' + escapeHtml(test.bookletType || '-') + ' · ' + escapeHtml(test.status || '-') + '</div>',
     '</div>',
+    '<div style="display:flex;gap:var(--space-xs);flex-wrap:wrap;justify-content:flex-end;">',
     '<button class="btn btn-secondary btn-sm booklet-open-btn" data-test-id="' + test.id + '">Ac</button>',
+    '<button class="btn btn-danger btn-sm booklet-delete-test-btn" data-test-id="' + test.id + '">Sil</button>',
+    '</div>',
     '</div>',
   ].join('');
 }
@@ -120,6 +138,9 @@ async function loadReview(container, testId) {
     const review = await getBookletReview(testId);
     root.innerHTML = renderReview(review);
     bindReviewEvents(container, review);
+    if (review.status === 'finalized') {
+      await refreshFinalQuestions(root, review.testId);
+    }
   } catch (error) {
     root.innerHTML = '<div class="card" style="padding:var(--space-md);color:var(--color-danger);">' + escapeHtml(error.message) + '</div>';
   }
@@ -155,6 +176,7 @@ function renderReview(review) {
     '<div style="display:flex;gap:var(--space-sm);margin-top:var(--space-sm);flex-wrap:wrap;">',
     '<button class="btn btn-secondary" id="booklet-apply-answer-key">Cevaplari Esle</button>',
     '<button class="btn btn-primary" id="booklet-finalize-btn">Onayla ve Kaydet</button>',
+    '<button class="btn btn-secondary" id="booklet-auto-tag-btn">Tumunu MEB Konularıyla Tagle</button>',
     '</div>',
     '</div>',
     '<div class="card" style="padding:var(--space-md);margin-bottom:var(--space-xl);">',
@@ -228,8 +250,62 @@ function bindReviewEvents(container, review) {
       const finalQuestions = await getFinalBookletQuestions(review.testId);
       showToast({ title: 'Kaydedildi', message: data.savedCount + ' soru kalici olarak kaydedildi.', type: 'success' });
       root.querySelector('#booklet-final-root').innerHTML = renderFinalQuestions(finalQuestions);
+      bindFinalQuestionEvents(root, review.testId);
     } catch (error) {
       showToast({ title: 'Finalize hatasi', message: error.message, type: 'error' });
+    }
+  });
+
+  root.querySelector('#booklet-auto-tag-btn').addEventListener('click', async () => {
+    if (!confirm('Finalize edilen tum etiketsiz booklet sorulari secilen sinav turune gore (TYT/AYT/YDT) MEB/YKS konu listesinden taglenecek. Devam edilsin mi?')) return;
+    const button = root.querySelector('#booklet-auto-tag-btn');
+    const oldText = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Tagleniyor...';
+
+    try {
+      if (review.status !== 'finalized') {
+        await finalizeBookletTest(review.testId);
+      }
+      let totalUpdated = 0;
+      let totalSkipped = 0;
+      let analyzed = 0;
+      let hasMore = true;
+      const maxRounds = 40;
+      let stalledRounds = 0;
+
+      for (let round = 1; round <= maxRounds && hasMore; round++) {
+        button.textContent = 'Tagleniyor... ' + totalUpdated + ' kayit';
+        const result = await autoTagBookletTest(review.testId, {
+          limit: 10,
+          batchSize: 1,
+          overwrite: false,
+        });
+        analyzed += result.analyzed || 0;
+        totalUpdated += result.updated || 0;
+        totalSkipped += result.skipped || 0;
+        hasMore = Boolean(result.hasMore);
+        if (!result.updated && !result.analyzed) break;
+        stalledRounds = result.updated ? 0 : stalledRounds + 1;
+        if (stalledRounds >= 3) break;
+        if (hasMore) await wait(1200);
+      }
+
+      const finalQuestions = await getFinalBookletQuestions(review.testId);
+      const remaining = finalQuestions.filter(question => !question.lesson && !question.topicName).length;
+      showToast({
+        title: remaining ? 'Gemini tagleme kismi tamamlandi' : 'Gemini tagleme tamamlandi',
+        message: totalUpdated + ' soru taglendi, ' + totalSkipped + ' sonuc atlandi, ' + remaining + ' soru bos kaldi.',
+        type: totalUpdated && !remaining ? 'success' : 'warning',
+      });
+      root.querySelector('#booklet-final-root').innerHTML = renderFinalQuestions(finalQuestions);
+      bindFinalQuestionEvents(root, review.testId);
+      button.disabled = false;
+      button.textContent = oldText;
+    } catch (error) {
+      showToast({ title: 'Gemini tagleme hatasi', message: error.message, type: 'error' });
+      button.disabled = false;
+      button.textContent = oldText;
     }
   });
 
@@ -294,14 +370,58 @@ function bindReviewEvents(container, review) {
 }
 
 function renderFinalQuestions(questions) {
+  const taggedCount = questions.filter(question => question.lesson || question.topicName).length;
   return [
     '<div class="card" style="padding:var(--space-md);">',
-    '<div style="font-weight:700;margin-bottom:var(--space-sm);">Kalici Kayit</div>',
-    '<div style="display:flex;flex-direction:column;gap:var(--space-sm);">',
-    questions.map(question => '<div style="display:flex;gap:var(--space-sm);align-items:center;"><span style="min-width:180px;font-weight:650;">' + escapeHtml(question.sectionName || question.sectionCode || 'Main') + ' · ' + escapeHtml(question.sectionQuestionNumber || '') + '</span><span style="font-size:var(--font-xs);color:var(--text-tertiary);">global ' + escapeHtml(question.globalQuestionOrder || '') + ' · ' + escapeHtml(question.correctAnswer || '-') + '</span><code style="font-size:11px;">' + escapeHtml(question.imagePath) + '</code></div>').join(''),
+    '<div style="display:flex;justify-content:space-between;gap:var(--space-sm);align-items:center;flex-wrap:wrap;margin-bottom:var(--space-sm);">',
+    '<div style="font-weight:700;">Kalici Kayit / Tagler</div>',
+    '<div style="font-size:var(--font-xs);color:var(--text-tertiary);">' + taggedCount + ' / ' + questions.length + ' tagli</div>',
     '</div>',
+    questions.length ? [
+      '<div style="overflow-x:auto;"><table class="data-table" style="width:100%;"><thead><tr><th>Soru</th><th>Cevap</th><th>Ders</th><th>Konu</th><th>Guven</th><th>Zorluk</th><th>Dosya</th><th></th></tr></thead><tbody>',
+      questions.map(question => [
+        '<tr>',
+        '<td><strong>' + escapeHtml(question.sectionName || question.sectionCode || 'Main') + ' ' + escapeHtml(question.sectionQuestionNumber || '') + '</strong><div style="font-size:var(--font-xs);color:var(--text-tertiary);">global ' + escapeHtml(question.globalQuestionOrder || '') + '</div></td>',
+        '<td>' + (question.correctAnswer ? '<strong>' + escapeHtml(question.correctAnswer) + '</strong>' : '<span style="color:var(--color-warning);font-weight:650;">Cevap yok</span>') + '</td>',
+        '<td>' + escapeHtml(question.lesson || '-') + '</td>',
+        '<td>' + escapeHtml(question.topicName || '-') + '</td>',
+        '<td>' + escapeHtml(question.topicConfidence ? Math.round(question.topicConfidence * 100) + '%' : '-') + '</td>',
+        '<td>' + escapeHtml(question.difficulty || '-') + '</td>',
+        '<td><code style="font-size:11px;">' + escapeHtml(question.imagePath) + '</code></td>',
+        '<td><button class="btn btn-danger btn-sm final-question-delete-btn" data-question-id="' + question.id + '">Sil</button></td>',
+        '</tr>',
+      ].join('')).join(''),
+      '</tbody></table></div>',
+    ].join('') : '<div style="color:var(--text-tertiary);">Kalici soru yok.</div>',
     '</div>',
   ].join('');
+}
+
+async function refreshFinalQuestions(root, testId) {
+  const target = root.querySelector('#booklet-final-root');
+  if (!target) return;
+  try {
+    const finalQuestions = await getFinalBookletQuestions(testId);
+    target.innerHTML = renderFinalQuestions(finalQuestions);
+    bindFinalQuestionEvents(root, testId);
+  } catch (error) {
+    target.innerHTML = '<div class="card" style="padding:var(--space-md);color:var(--color-danger);">' + escapeHtml(error.message) + '</div>';
+  }
+}
+
+function bindFinalQuestionEvents(root, testId) {
+  root.querySelectorAll('.final-question-delete-btn').forEach(button => {
+    button.addEventListener('click', async () => {
+      if (!confirm('Bu kalici soruyu silmek istiyor musunuz?')) return;
+      try {
+        await deleteFinalBookletQuestion(testId, button.dataset.questionId);
+        showToast({ title: 'Soru silindi', message: 'Kalici soru kaydi kaldirildi.', type: 'info' });
+        await refreshFinalQuestions(root, testId);
+      } catch (error) {
+        showToast({ title: 'Silme hatasi', message: error.message, type: 'error' });
+      }
+    });
+  });
 }
 
 function renderSectionOptions(selectedCode, sections) {
@@ -357,6 +477,10 @@ function readFileAsBase64(file) {
     reader.onerror = () => reject(new Error('Dosya okunamadi.'));
     reader.readAsDataURL(file);
   });
+}
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function escapeHtml(value) {

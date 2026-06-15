@@ -5,12 +5,21 @@
 
 import { store } from '../data/store.js';
 import { t } from '../data/i18n.js';
-import { identifyWeakAreas, getMasteryRadarData, generateInsights, calculateTopicMastery, detectTrend, getConsistencyData } from '../engine/performanceAnalyzer.js';
+import { identifyWeakAreas, generateInsights, calculateTopicMastery, detectTrend, getConsistencyData } from '../engine/performanceAnalyzer.js';
 import { analyzeTopicsFromQuestions, identifyWeakTopics, identifyStrongTopics, identifyUntestedTopics } from '../engine/topicAnalyzer.js';
 import { rankTopics, getPriorityLabel, getPriorityClass } from '../engine/priorityCalculator.js';
 import { drawRadarChart, drawLineChart, renderStars } from './components.js';
 
-export function renderAnalytics(container) {
+const analyticsState = {
+  selectedLesson: '',
+};
+
+export function renderAnalytics(container, options = {}) {
+  const preserveSelection = Boolean(options.preserveSelection);
+  if (!preserveSelection) {
+    analyticsState.selectedLesson = '';
+  }
+
   const exams = store.getExams();
   const topics = store.getTopics();
   const mockResults = store.getMockResults();
@@ -20,7 +29,12 @@ export function renderAnalytics(container) {
   const questions = store.getQuestions();
   const questionAnswers = store.getQuestionAnswers();
   const weakAreas = identifyWeakAreas(topics, mockResults);
-  const radarData = getMasteryRadarData(topics, mockResults);
+  const lessonOptions = getRadarLessonOptions(topics, mockResults);
+  if (analyticsState.selectedLesson && !lessonOptions.includes(analyticsState.selectedLesson)) {
+    analyticsState.selectedLesson = '';
+  }
+  const radarSelection = getRadarSelection(topics, mockResults, analyticsState.selectedLesson);
+  const radarData = radarSelection.data;
   const consistencyData = getConsistencyData(sessions);
   const ranked = rankTopics(exams, topics, mockResults, settings.weights);
   const questionAnalysis = questions.length > 0
@@ -47,10 +61,19 @@ export function renderAnalytics(container) {
         <!-- Radar Chart -->
         <div class="card animate-fade-in-up" style="animation-delay: 0.1s">
           <div class="card-header"><h3 class="card-title">🎯 ${t('analytics.masteryRadar')}</h3></div>
+          <div style="padding:0 var(--space-md) var(--space-sm);display:flex;align-items:center;justify-content:space-between;gap:var(--space-sm);flex-wrap:wrap;">
+            <div style="font-size:var(--font-xs);color:var(--text-tertiary);">${analyticsState.selectedLesson || t('analytics.radarModeGeneral')}</div>
+            <div style="display:flex;gap:var(--space-xs);flex-wrap:wrap;">
+              <select class="form-select" id="radar-lesson-select" style="min-width:180px;">
+                <option value="">${t('analytics.radarModeGeneral')}</option>
+                ${lessonOptions.map(lesson => '<option value="' + lesson + '"' + (lesson === analyticsState.selectedLesson ? ' selected' : '') + '>' + lesson + '</option>').join('')}
+              </select>
+            </div>
+          </div>
           ${radarData.length >= 3 ? `
             <div class="chart-container"><canvas id="mastery-radar" width="400" height="400"></canvas></div>
           ` : `
-            <div class="empty-state"><p>${t('analytics.needMoreTopics')}</p></div>
+            <div class="empty-state"><p>${radarSelection.emptyMessage}</p></div>
           `}
         </div>
 
@@ -197,10 +220,89 @@ export function renderAnalytics(container) {
     if (radarCanvas) drawRadarChart(radarCanvas, radarData);
   }
 
+  const radarLessonSelect = container.querySelector('#radar-lesson-select');
+  if (radarLessonSelect) {
+    radarLessonSelect.addEventListener('change', function() {
+      if (analyticsState.selectedLesson !== this.value) {
+        analyticsState.selectedLesson = this.value;
+        renderAnalytics(container, { preserveSelection: true });
+      }
+    });
+  }
+
   if (mockResults.length > 0) {
     const trendCanvas = document.getElementById('trend-chart');
     if (trendCanvas) drawTrendChart(trendCanvas, topics, mockResults, exams);
   }
+}
+
+function getRadarSelection(topics, mockResults, selectedLesson) {
+  if (selectedLesson) {
+    const topicData = topics
+      .filter(topic => (String(topic.lesson || '').trim() || t('analytics.unknownLesson')) === selectedLesson)
+      .map(topic => buildRadarPointFromTopic(topic, mockResults))
+      .sort((a, b) => a.label.localeCompare(b.label, 'tr'));
+    return {
+      data: topicData,
+      emptyMessage: t('analytics.needMoreLessonTopics'),
+    };
+  }
+
+  return {
+    data: getRadarLessonData(topics, mockResults),
+    emptyMessage: t('analytics.needMoreLessons'),
+  };
+}
+
+function getRadarLessonOptions(topics, mockResults) {
+  return getRadarLessonData(topics, mockResults).map(item => item.label);
+}
+
+function getRadarLessonData(topics, mockResults) {
+  const lessonMap = new Map();
+  topics.forEach(topic => {
+    const mastery = calculateTopicMastery(topic.id, mockResults);
+    const lessonName = String(topic.lesson || '').trim() || t('analytics.unknownLesson');
+    const entry = lessonMap.get(lessonName) || {
+      label: lessonName,
+      sum: 0,
+      totalCount: 0,
+      testedCount: 0,
+    };
+    entry.totalCount += 1;
+    if (mastery !== null) {
+      entry.sum += mastery;
+      entry.testedCount += 1;
+    }
+    lessonMap.set(lessonName, entry);
+  });
+
+  return Array.from(lessonMap.values())
+    .sort((a, b) => a.label.localeCompare(b.label, 'tr'))
+    .map(entry => {
+      const divisor = Math.max(entry.totalCount, 1);
+      const value = Math.round((entry.sum / divisor) * 1000) / 1000;
+      return {
+        label: entry.label,
+        value,
+        status: entry.testedCount === 0 ? 'untested' :
+          value < 0.3 ? 'critical' :
+          value < 0.5 ? 'weak' :
+          value < 0.7 ? 'moderate' : 'strong',
+      };
+    });
+}
+
+function buildRadarPointFromTopic(topic, mockResults) {
+  const mastery = calculateTopicMastery(topic.id, mockResults);
+  return {
+    label: topic.name,
+    value: mastery !== null ? mastery : 0,
+    status: mastery === null ? 'untested' :
+      mastery < 0.3 ? 'critical' :
+      mastery < 0.5 ? 'weak' :
+      mastery < 0.7 ? 'moderate' : 'strong',
+  };
 }
 
 function drawTrendChart(canvas, topics, mockResults, exams) {

@@ -115,12 +115,53 @@ export async function updateQuestion(id, updates) {
   return request('PUT', '/questions/' + id, updates);
 }
 
+export async function autoTagQuestions(options = {}) {
+  return request('POST', '/questions/auto-tag', options);
+}
+
 export async function deleteQuestion(id) {
   return request('DELETE', '/questions/' + id);
 }
 
 export async function answerQuestion(questionId, selectedOption) {
   return request('POST', '/questions/' + questionId + '/answer', { selectedOption });
+}
+
+export async function getQuizBookletLessons(examType) {
+  const params = new URLSearchParams({ examType });
+  return request('GET', '/quiz/booklet-lessons?' + params.toString());
+}
+
+export async function getQuizBookletTopics(examType) {
+  const params = new URLSearchParams({ examType });
+  return request('GET', '/quiz/booklet-topics?' + params.toString());
+}
+
+export async function getQuizBookletBranches(examType) {
+  const params = new URLSearchParams({ examType });
+  return request('GET', '/quiz/booklet-branches?' + params.toString());
+}
+
+export async function getBookletTopicStats(examType = '') {
+  const params = new URLSearchParams();
+  if (examType) params.set('examType', examType);
+  const qs = params.toString() ? '?' + params.toString() : '';
+  return request('GET', '/quiz/booklet-topic-stats' + qs);
+}
+
+export async function getQuizBookletQuestions({ examType, lessonKey = '', branchKey = '', topicKey = '', limit = 10 }) {
+  const params = new URLSearchParams({
+    examType,
+    limit: String(limit),
+  });
+  if (lessonKey) params.set('lessonKey', lessonKey);
+  if (branchKey) params.set('branchKey', branchKey);
+  if (topicKey) params.set('topicKey', topicKey);
+  return request('GET', '/quiz/booklet-questions?' + params.toString());
+}
+
+export async function answerQuizBookletQuestion(questionId, selectedOption) {
+  return request('POST', '/quiz/booklet-questions/' + questionId + '/answer', { selectedOption });
 }
 
 export async function extractQuestionsWithOcr({ fileName, fileBase64, lang = 'tur+eng' }) {
@@ -141,6 +182,10 @@ export async function getBookletTests() {
 
 export async function createBookletTest(payload) {
   return request('POST', '/admin/booklet-tests', payload);
+}
+
+export async function deleteBookletTest(testId) {
+  return request('DELETE', '/admin/booklet-tests/' + testId);
 }
 
 export async function uploadBookletTestPdf(testId, payload) {
@@ -171,8 +216,16 @@ export async function finalizeBookletTest(testId) {
   return request('POST', '/admin/booklet-tests/' + testId + '/finalize');
 }
 
+export async function autoTagBookletTest(testId, options = {}) {
+  return request('POST', '/admin/booklet-tests/' + testId + '/auto-tag', options);
+}
+
 export async function getFinalBookletQuestions(testId) {
   return request('GET', '/admin/booklet-tests/' + testId + '/questions');
+}
+
+export async function deleteFinalBookletQuestion(testId, questionId) {
+  return request('DELETE', '/admin/booklet-tests/' + testId + '/questions/' + questionId);
 }
 
 export async function getSettings() {

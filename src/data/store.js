@@ -10,6 +10,7 @@ import {
   createSession as apiCreateSession, deleteSession as apiDeleteSession, setSessions as apiSetSessions, updateSession as apiUpdateSession, clearSessions as apiClearSessions,
   createMockResult as apiCreateMockResult, deleteMockResult as apiDeleteMockResult,
   createQuestion as apiCreateQuestion, updateQuestion as apiUpdateQuestion, deleteQuestion as apiDeleteQuestion, answerQuestion as apiAnswerQuestion,
+  autoTagQuestions as apiAutoTagQuestions,
   updateSettings as apiUpdateSettings,
 } from '../api/dataApi.js';
 
@@ -290,7 +291,7 @@ export const store = {
     syncToServer('mockResult', () => apiDeleteMockResult(id));
   },
 
-  // --- Question Bank ---
+  // --- Questions ---
   getQuestions(filters = {}) {
     let result = [...state.questions];
     if (filters.examType) result = result.filter(q => q.examType === filters.examType);
@@ -312,6 +313,18 @@ export const store = {
       saveState(); emit('questions:changed', state.questions[idx]);
       syncToServer('question', () => apiUpdateQuestion(id, updates));
     }
+  },
+  async autoTagQuestions(options = {}) {
+    const result = await apiAutoTagQuestions(options);
+    const updatedQuestions = result.updatedQuestions || [];
+    updatedQuestions.forEach(question => {
+      const idx = state.questions.findIndex(item => item.id === question.id);
+      if (idx >= 0) state.questions[idx] = question;
+      else state.questions.push(question);
+    });
+    saveState();
+    emit('questions:changed', { autoTagged: true, updatedQuestions });
+    return result;
   },
   deleteQuestion(id) {
     state.questions = state.questions.filter(q => q.id !== id);

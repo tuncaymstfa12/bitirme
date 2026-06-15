@@ -32,15 +32,15 @@ INSTRUCTION_PATTERNS = [
     'cevaplarinizi kontrol ediniz',
 ]
 SECTION_DEFINITIONS = [
-    {'code': 'turkce', 'name': 'Türkçe Testi', 'aliases': ['turkce testi', 'turkce', 'türkçe testi', 'türkçe'], 'questionCount': 40},
-    {'code': 'sosyal', 'name': 'Sosyal Bilimler Testi', 'aliases': ['sosyal bilimler testi', 'sosyal bilimler', 'sosyal'], 'questionCount': 25},
-    {'code': 'temel_matematik', 'name': 'Temel Matematik Testi', 'aliases': ['temel matematik testi', 'temel matematik', 'matematik testi', 'matematik'], 'questionCount': 40},
-    {'code': 'fen', 'name': 'Fen Bilimleri Testi', 'aliases': ['fen bilimleri testi', 'fen bilimleri', 'fen'], 'questionCount': 20},
-    {'code': 'edebiyat_sos1', 'name': 'Türk Dili ve Edebiyatı-Sosyal Bilimler-1', 'aliases': ['turk dili ve edebiyati sosyal bilimler 1', 'türk dili ve edebiyatı sosyal bilimler 1'], 'questionCount': 40},
-    {'code': 'sos2', 'name': 'Sosyal Bilimler-2', 'aliases': ['sosyal bilimler 2', 'sosyal bilimler-2'], 'questionCount': 40},
-    {'code': 'ayt_matematik', 'name': 'Matematik Testi', 'aliases': ['matematik testi', 'matematik'], 'questionCount': 40},
-    {'code': 'ayt_fen', 'name': 'Fen Bilimleri Testi', 'aliases': ['fen bilimleri testi', 'fen bilimleri', 'fen'], 'questionCount': 40},
-    {'code': 'ydt', 'name': 'Yabancı Dil Testi', 'aliases': ['yabanci dil testi', 'yabancı dil testi', 'ydt'], 'questionCount': 80},
+    {'code': 'turkce', 'name': 'Türkçe Testi', 'aliases': ['turkce testi', 'turkce', 'türkçe testi', 'türkçe'], 'questionCount': 40, 'examTypes': ['TYT']},
+    {'code': 'sosyal', 'name': 'Sosyal Bilimler Testi', 'aliases': ['sosyal bilimler testi', 'sosyal bilimler', 'sosyal'], 'questionCount': 25, 'examTypes': ['TYT']},
+    {'code': 'temel_matematik', 'name': 'Temel Matematik Testi', 'aliases': ['temel matematik testi', 'temel matematik', 'matematik testi', 'matematik'], 'questionCount': 40, 'examTypes': ['TYT']},
+    {'code': 'fen', 'name': 'Fen Bilimleri Testi', 'aliases': ['fen bilimleri testi', 'fen bilimleri', 'fen'], 'questionCount': 20, 'examTypes': ['TYT']},
+    {'code': 'edebiyat_sos1', 'name': 'Türk Dili ve Edebiyatı-Sosyal Bilimler-1', 'aliases': ['turk dili ve edebiyati sosyal bilimler 1', 'türk dili ve edebiyatı sosyal bilimler 1', 'turk dili ve edebiyati-sosyal bilimler-1', 'türk dili ve edebiyatı-sosyal bilimler-1'], 'questionCount': 40, 'examTypes': ['AYT']},
+    {'code': 'sos2', 'name': 'Sosyal Bilimler-2', 'aliases': ['sosyal bilimler 2', 'sosyal bilimler-2'], 'questionCount': 46, 'examTypes': ['AYT']},
+    {'code': 'ayt_matematik', 'name': 'Matematik Testi', 'aliases': ['matematik testi', 'matematik'], 'questionCount': 40, 'examTypes': ['AYT']},
+    {'code': 'ayt_fen', 'name': 'Fen Bilimleri Testi', 'aliases': ['fen bilimleri testi', 'fen bilimleri', 'fen'], 'questionCount': 40, 'examTypes': ['AYT']},
+    {'code': 'ydt', 'name': 'Yabancı Dil Testi', 'aliases': ['yabanci dil testi', 'yabancı dil testi', 'ydt'], 'questionCount': 80, 'examTypes': ['YDT']},
 ]
 
 
@@ -249,12 +249,31 @@ def contains_section_alias(normalized_text, alias):
     return re.search(pattern, normalized_text) is not None
 
 
-def find_section_definition(text):
+def get_section_definitions(exam_type=''):
+    normalized_exam_type = str(exam_type or '').strip().upper()
+    if not normalized_exam_type:
+        return SECTION_DEFINITIONS
+    return [
+        definition for definition in SECTION_DEFINITIONS
+        if normalized_exam_type in definition.get('examTypes', [])
+    ]
+
+
+def find_section_definition(text, exam_type=''):
     normalized = normalize_section_token(text)
-    for definition in SECTION_DEFINITIONS:
-        if any(contains_section_alias(normalized, alias) for alias in definition['aliases']):
-            return definition
-    return None
+    matches = []
+    for definition in get_section_definitions(exam_type):
+        matched_aliases = [
+            alias for alias in definition['aliases']
+            if contains_section_alias(normalized, alias)
+        ]
+        if matched_aliases:
+            best_alias = max(matched_aliases, key=lambda alias: len(normalize_section_token(alias)))
+            matches.append((definition, best_alias))
+    if not matches:
+        return None
+    matches.sort(key=lambda item: len(normalize_section_token(item[1])), reverse=True)
+    return matches[0][0]
 
 
 def detect_sections(pages, exam_type):
@@ -263,7 +282,7 @@ def detect_sections(pages, exam_type):
     for page in pages:
         header_lines = [line['text'] for line in page['lines'] if line['yMin'] < 120]
         header_text = ' '.join(header_lines)
-        definition = find_section_definition(header_text)
+        definition = find_section_definition(header_text, exam_type)
         if definition:
             if definition['code'] in seen_codes:
                 continue
@@ -299,14 +318,54 @@ def find_section_for_page(sections, page_number):
     return sections[0]
 
 
-def is_answer_key_page(page, sections):
-    matched_codes = set()
-    for line in page['lines']:
-        if line['yMin'] > 160:
+def collect_answer_key_headers(page, exam_type, max_header_y=160):
+    top_lines = [line for line in page['lines'] if line['yMin'] <= max_header_y]
+    if not top_lines:
+        return []
+
+    groups = []
+    for line in sorted(top_lines, key=lambda item: (item['xMin'], item['yMin'])):
+        x_center = (line['xMin'] + line['xMax']) / 2
+        group = None
+        for candidate in groups:
+            if abs(candidate['xCenter'] - x_center) <= 40:
+                group = candidate
+                break
+        if group is None:
+            group = {'xCenter': x_center, 'lines': []}
+            groups.append(group)
+        else:
+            group['xCenter'] = (group['xCenter'] + x_center) / 2
+        group['lines'].append(line)
+
+    headers = []
+    for group in groups:
+        group_lines = sorted(group['lines'], key=lambda item: item['yMin'])
+        combined_text = ' '.join(line['text'] for line in group_lines)
+        definition = find_section_definition(combined_text, exam_type)
+        if not definition:
             continue
-        definition = find_section_definition(line['text'])
-        if definition and any(section['sectionCode'] == definition['code'] for section in sections):
-            matched_codes.add(definition['code'])
+        headers.append({
+            'sectionCode': definition['code'],
+            'xCenter': sum((line['xMin'] + line['xMax']) / 2 for line in group_lines) / len(group_lines),
+            'yMin': min(line['yMin'] for line in group_lines),
+        })
+
+    headers.sort(key=lambda item: item['xCenter'])
+    deduped = []
+    for header in headers:
+        if any(existing['sectionCode'] == header['sectionCode'] for existing in deduped):
+            continue
+        deduped.append(header)
+    return deduped
+
+
+def is_answer_key_page(page, sections, exam_type):
+    matched_codes = {
+        header['sectionCode']
+        for header in collect_answer_key_headers(page, exam_type)
+        if any(section['sectionCode'] == header['sectionCode'] for section in sections)
+    }
     return len(matched_codes) >= min(2, len(sections))
 
 
@@ -602,32 +661,21 @@ def detect_answer_key_from_text(text, sections):
     return {code: values for code, values in answer_key.items() if values}
 
 
-def detect_answer_key_from_pages(pages, sections):
+def detect_answer_key_from_pages(pages, sections, exam_type):
     if not pages or not sections:
         return {}
 
     section_lookup = {section['sectionCode']: section for section in sections}
 
     for page in reversed(pages):
-        column_headers = []
-        for line in page['lines']:
-            if line['yMin'] > 160:
-                continue
-            definition = find_section_definition(line['text'])
-            if not definition or definition['code'] not in section_lookup:
-                continue
-            if any(header['sectionCode'] == definition['code'] for header in column_headers):
-                continue
-            column_headers.append({
-                'sectionCode': definition['code'],
-                'xCenter': (line['xMin'] + line['xMax']) / 2,
-                'yMin': line['yMin'],
-            })
+        column_headers = [
+            header for header in collect_answer_key_headers(page, exam_type)
+            if header['sectionCode'] in section_lookup
+        ]
 
         if len(column_headers) < min(2, len(sections)):
             continue
 
-        column_headers.sort(key=lambda item: item['xCenter'])
         per_column_rows = {header['sectionCode']: [] for header in column_headers}
 
         for line in page['lines']:
@@ -693,7 +741,7 @@ def build_review(args):
     pages = extract_bbox_lines(args.pdf)
     plain_text = extract_plain_text(args.pdf)
     sections = detect_sections(pages, args.exam_type)
-    answer_key_page_numbers = {page['pageNumber'] for page in pages if is_answer_key_page(page, sections)}
+    answer_key_page_numbers = {page['pageNumber'] for page in pages if is_answer_key_page(page, sections, args.exam_type)}
     if answer_key_page_numbers and sections:
         first_answer_key_page = min(answer_key_page_numbers)
         for section in sections:
@@ -767,7 +815,7 @@ def build_review(args):
     for index, detection in enumerate(detections, start=1):
         detection['globalQuestionOrder'] = index
 
-    answer_key = detect_answer_key_from_pages(pages, sections) or detect_answer_key_from_text(plain_text, sections)
+    answer_key = detect_answer_key_from_pages(pages, sections, args.exam_type) or detect_answer_key_from_text(plain_text, sections)
     apply_answer_key_to_detections(detections, answer_key)
 
     review = {

@@ -16,7 +16,10 @@ export const CURRICULUM = {
       'Rasyonel Sayılar', 'Basit Eşitsizlikler', 'Mutlak Değer', 'Üslü Sayılar',
       'Köklü Sayılar', 'Çarpanlara Ayırma', 'Oran-Orantı',
       'Denklem Çözme (1. Derece)', 'Problemler', 'Kümeler',
-      'Fonksiyonlar', 'Permütasyon-Kombinasyon', 'Olasılık', 'Veri-İstatistik'
+      'Mantık', 'Fonksiyonlar', 'Grafikler',
+      'Permütasyon-Kombinasyon', 'Olasılık', 'Veri-İstatistik',
+      'Geometri', 'Üçgenler', 'Dörtgenler', 'Çokgenler',
+      'Çember ve Daire', 'Katı Cisimler'
     ],
     'Fizik': [
       'Fizik Bilimine Giriş', 'Madde ve Özellikleri', 'Kuvvet ve Hareket',
@@ -30,7 +33,8 @@ export const CURRICULUM = {
       'Karışımlar', 'Endüstride ve Canlılarda Enerji', 'Kimya Her Yerde'
     ],
     'Biyoloji': [
-      'Canlıların Ortak Özellikleri', 'Hücre ve Organelleri', 'Canlıların Sınıflandırılması',
+      'Canlıların Ortak Özellikleri', 'Canlıların Temel Bileşenleri',
+      'Hücre ve Organelleri', 'Canlıların Sınıflandırılması',
       'Hücre Bölünmeleri', 'Kalıtım', 'Ekosistem Ekolojisi',
       'Madde Döngüleri', 'Güncel Çevre Sorunları'
     ],
@@ -60,9 +64,14 @@ export const CURRICULUM = {
   AYT: {
     sayisal: {
       'Matematik': [
-        'Trigonometri', 'Logaritma', 'Diziler', 'Limit ve Süreklilik',
-        'Türev', 'İntegral', 'Parabol', 'İkinci Derece Denklemler',
-        'Karmaşık Sayılar', 'Matris-Determinant', 'Olasılık (İleri)'
+        'Temel Kavramlar', 'Mantık', 'Kümeler', 'Fonksiyonlar',
+        'Grafikler', 'Polinomlar', 'İkinci Derece Denklemler',
+        'Eşitsizlikler', 'Parabol', 'Trigonometri', 'Logaritma',
+        'Diziler', 'Limit ve Süreklilik', 'Türev', 'İntegral',
+        'Karmaşık Sayılar', 'Permütasyon-Kombinasyon',
+        'Olasılık (İleri)', 'Matris-Determinant', 'Geometri',
+        'Analitik Geometri', 'Üçgenler', 'Çember ve Daire', 'Katı Cisimler',
+        'Uzay Geometri'
       ],
       'Fizik': [
         'Vektörler', 'Kuvvet ve Denge', 'Tork', 'Basit Makineler',
@@ -71,10 +80,15 @@ export const CURRICULUM = {
         'Manyetik Alan', 'Elektromanyetik İndüksiyon', 'Modern Fizik'
       ],
       'Kimya': [
-        'Modern Atom Teorisi', 'Gazlar', 'Sıvı Çözeltiler',
+        'Modern Atom Teorisi', 'Yükseltgenme Basamakları',
+        'Gazlar', 'İdeal Gaz', 'İdeal Gaz Yasası',
+        'İdeal Gaz Denklemi', 'Gaz Yasaları', 'Gaz Problemleri',
+        'Gazların Özellikleri',
+        'Sıvı Çözeltiler', 'Çözünürlük', 'Derişim',
         'Kimyasal Tepkimelerde Enerji', 'Kimyasal Tepkimelerde Hız',
         'Kimyasal Denge', 'Asit-Baz Dengeleri', 'Elektrokimya',
-        'Organik Kimyaya Giriş', 'Karbon Kimyası'
+        'Organik Kimyaya Giriş', 'Organik Bileşikler',
+        'Alkoller', 'Aromatik Bileşikler', 'Karbon Kimyası'
       ],
       'Biyoloji': [
         'Sinir Sistemi', 'Endokrin Sistem', 'Duyu Organları',
@@ -82,34 +96,47 @@ export const CURRICULUM = {
         'Solunum Sistemi', 'Boşaltım Sistemi', 'Üreme Sistemi',
         'Nükleik Asitler', 'Protein Sentezi', 'Biyoteknoloji',
         'Fotosentez', 'Solunum (Hücresel)', 'Bitki Biyolojisi',
-        'Komünite ve Popülasyon Ekolojisi'
+        'Komünite ve Popülasyon Ekolojisi', 'Popülasyon Ekolojisi'
       ]
     },
     esit_agirlik: {
       'Matematik': [
-        'Trigonometri', 'Logaritma', 'Diziler', 'Limit ve Süreklilik',
-        'Türev', 'İntegral', 'Parabol', 'İkinci Derece Denklemler',
-        'Karmaşık Sayılar', 'Olasılık (İleri)'
+        'Temel Kavramlar', 'Mantık', 'Kümeler', 'Fonksiyonlar',
+        'Grafikler', 'Polinomlar', 'İkinci Derece Denklemler',
+        'Eşitsizlikler', 'Parabol', 'Trigonometri', 'Logaritma',
+        'Diziler', 'Limit ve Süreklilik', 'Türev', 'İntegral',
+        'Karmaşık Sayılar', 'Permütasyon-Kombinasyon',
+        'Olasılık (İleri)', 'Geometri', 'Analitik Geometri',
+        'Üçgenler', 'Çember ve Daire', 'Katı Cisimler',
+        'Uzay Geometri'
       ],
       'Türk Dili ve Edebiyatı': [
         'İslamiyet Öncesi Türk Edebiyatı', 'İslami Dönem Türk Edebiyatı',
         'Divan Edebiyatı', 'Halk Edebiyatı', 'Tanzimat Edebiyatı',
         'Servet-i Fünun', 'Fecr-i Ati', 'Milli Edebiyat',
         'Cumhuriyet Dönemi Edebiyatı', 'Edebi Türler', 'Edebi Sanatlar',
-        'Şiir Bilgisi'
+        'Şiir Bilgisi', 'Nazım Biçimleri', 'Mâni',
+        'Geleneksel Türk Tiyatrosu',
+        'Masal ve Fabl', 'Edebi Akımlar', 'Roman', 'Tezkire'
       ],
       'Tarih-1': [
-        'Tarih Bilimine Giriş', 'İlk Türk Devletleri', 'İslamiyetin Doğuşu',
+        'Tarih Bilimine Giriş', 'İlk Çağ Uygarlıkları',
+        'İlk Türk Devletleri', 'İslamiyetin Doğuşu',
         'Türk-İslam Devletleri', 'Osmanlı Kültür ve Medeniyeti',
-        'Osmanlı Siyasi Tarihi (18-19. yy)', '20. yy Osmanlı',
+        'Orta Çağ Avrupası', 'Haçlı Seferleri', 'Coğrafi Keşifler',
+        'Osmanlı Siyasi Tarihi (18-19. yy)', 'Tanzimat Dönemi',
+        '20. yy Osmanlı',
         'Milli Mücadele', 'Atatürk Dönemi İç ve Dış Politika',
         'Atatürk İlke ve İnkılapları', 'İkinci Dünya Savaşı ve Sonrası'
       ],
       'Coğrafya-1': [
         'Ekosistem ve Madde Döngüleri', 'Nüfus Politikaları',
         'Şehirleşme', 'Göç ve Kültür', 'Ekonomik Coğrafya',
-        'Tarım ve Hayvancılık', 'Sanayi ve Enerji',
-        'Ulaşım ve Ticaret', 'Turizm', 'Çevre Sorunları ve Sürdürülebilirlik'
+        'Tarım ve Hayvancılık', 'Madenler ve Enerji Kaynakları',
+        'Sanayi ve Enerji', 'Ulaşım ve Ticaret', 'Turizm',
+        'Bölgesel Kalkınma Projeleri', 'Arazi Kullanımı',
+        'Ekstrem Doğa Olayları',
+        'Çevre Sorunları ve Sürdürülebilirlik'
       ]
     },
     sozel: {
@@ -118,12 +145,17 @@ export const CURRICULUM = {
         'Divan Edebiyatı', 'Halk Edebiyatı', 'Tanzimat Edebiyatı',
         'Servet-i Fünun', 'Fecr-i Ati', 'Milli Edebiyat',
         'Cumhuriyet Dönemi Edebiyatı', 'Edebi Türler', 'Edebi Sanatlar',
-        'Şiir Bilgisi'
+        'Şiir Bilgisi', 'Nazım Biçimleri', 'Mâni',
+        'Geleneksel Türk Tiyatrosu',
+        'Masal ve Fabl', 'Edebi Akımlar', 'Roman', 'Tezkire'
       ],
       'Tarih-1': [
-        'Tarih Bilimine Giriş', 'İlk Türk Devletleri', 'İslamiyetin Doğuşu',
+        'Tarih Bilimine Giriş', 'İlk Çağ Uygarlıkları',
+        'İlk Türk Devletleri', 'İslamiyetin Doğuşu',
         'Türk-İslam Devletleri', 'Osmanlı Kültür ve Medeniyeti',
-        'Osmanlı Siyasi Tarihi (18-19. yy)', '20. yy Osmanlı',
+        'Orta Çağ Avrupası', 'Haçlı Seferleri', 'Coğrafi Keşifler',
+        'Osmanlı Siyasi Tarihi (18-19. yy)', 'Tanzimat Dönemi',
+        '20. yy Osmanlı',
         'Milli Mücadele', 'Atatürk Dönemi İç ve Dış Politika',
         'Atatürk İlke ve İnkılapları', 'İkinci Dünya Savaşı ve Sonrası'
       ],
@@ -139,15 +171,25 @@ export const CURRICULUM = {
       ],
       'Coğrafya-2': [
         'Biyoçeşitlilik', 'Enerji Akışı', 'Madde Döngüleri',
-        'Doğal Afetler', 'Arazi Kullanımı', 'Bölgesel Kalkınma',
-        'Sürdürülebilir Çevre'
+        'Doğal Afetler', 'Ekstrem Doğa Olayları',
+        'Arazi Kullanımı', 'Bölgesel Kalkınma',
+        'Madenler ve Enerji Kaynakları', 'Sürdürülebilir Çevre'
       ],
       'Felsefe Grubu': [
         'Felsefenin Konusu', 'Bilgi Felsefesi', 'Varlık Felsefesi',
         'Ahlak Felsefesi', 'Sanat Felsefesi', 'Din Felsefesi',
         'Siyaset Felsefesi', 'Bilim Felsefesi', 'Psikoloji Temel Kavramları',
-        'Sosyoloji Temel Kavramları', 'Mantık', 'Toplumsal Yapı',
+        'Sosyoloji Temel Kavramları', 'Dil Felsefesi', 'Mantık', 'Toplumsal Yapı',
         'Toplumsal Değişme'
+      ],
+      'Din Kültürü': [
+        'İnanç', 'İbadet', 'Ahlak ve Değerler',
+        'Hz. Muhammed ve Sünnet', 'Kur\'an ve Yorumu',
+        'İslam Düşüncesinde Yorumlar', 'Allah\'ın Sıfatları',
+        'Teizm', 'İslam İnanç Esasları', 'İslam İbadet Esasları',
+        'İhlas', 'İhsan',
+        'Kelam', 'Fıkıh',
+        'Din, Kültür ve Medeniyet'
       ]
     },
     dil: {
