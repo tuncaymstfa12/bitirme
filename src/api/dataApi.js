@@ -164,6 +164,10 @@ export async function answerQuizBookletQuestion(questionId, selectedOption) {
   return request('POST', '/quiz/booklet-questions/' + questionId + '/answer', { selectedOption });
 }
 
+export async function resetQuizBookletAnswers({ examType, lessonKey = '', branchKey = '', topicKey = '' }) {
+  return request('DELETE', '/quiz/booklet-answers', { examType, lessonKey, branchKey, topicKey });
+}
+
 export async function extractQuestionsWithOcr({ fileName, fileBase64, lang = 'tur+eng' }) {
   return request('POST', '/ocr/questions', { fileName, fileBase64, lang });
 }

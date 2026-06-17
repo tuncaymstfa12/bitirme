@@ -3,6 +3,7 @@ import {
   getQuizBookletBranches,
   getQuizBookletQuestions,
   getQuizBookletTopics,
+  resetQuizBookletAnswers,
 } from '../api/dataApi.js';
 import { showToast } from './components.js';
 
@@ -21,6 +22,7 @@ export function renderQuizView(container) {
     selectedKey: '',
     loadingItems: false,
     loadingQuestions: false,
+    resettingAnswers: false,
     submitting: false,
     questions: [],
     answers: [],
@@ -35,6 +37,9 @@ export function renderQuizView(container) {
     const correctCount = state.answers.filter(answer => answer.isCorrect).length;
     const wrongCount = state.answers.length - correctCount;
     const quizLimit = Math.min(10, Number(selectedItem?.availableCount || 10));
+    const resetButtonLabel = selectedItem
+      ? 'Çözülenleri Sıfırla'
+      : state.examType + ' Çözülenleri Sıfırla';
 
     container.innerHTML = [
       '<div class="page-header"><h2>Quiz Modu</h2><p>TYT/AYT sorularını branş veya konu bazlı çözün.</p></div>',
@@ -43,7 +48,10 @@ export function renderQuizView(container) {
       renderExamTypeField(state.examType),
       renderModeField(state.mode),
       renderSearchField(state.searchTerm),
-      '<div><button class="btn btn-primary" id="quiz-start-btn"' + ((state.loadingItems || state.loadingQuestions || !state.selectedKey || quizLimit < 1) ? ' disabled' : '') + '>' + quizLimit + ' Soruluk Quiz Başlat</button></div>',
+      '<div style="display:grid;gap:var(--space-xs);">',
+      '<button class="btn btn-primary" id="quiz-start-btn"' + ((state.loadingItems || state.loadingQuestions || state.resettingAnswers || !state.selectedKey || quizLimit < 1) ? ' disabled' : '') + '>' + quizLimit + ' Soruluk Quiz Başlat</button>',
+      '<button class="btn btn-danger" id="quiz-reset-answers-btn"' + ((state.loadingItems || state.loadingQuestions || state.resettingAnswers) ? ' disabled' : '') + '>' + (state.resettingAnswers ? 'Sıfırlanıyor...' : resetButtonLabel) + '</button>',
+      '</div>',
       '</div>',
       '<div style="margin-top:var(--space-md);">' + renderItemField(filteredItems, selectedItem, state) + '</div>',
       '<div style="margin-top:var(--space-sm);font-size:var(--font-sm);color:var(--text-tertiary);">' + renderSelectionHint(state, selectedItem, filteredItems.length) + '</div>',
@@ -104,11 +112,15 @@ export function renderQuizView(container) {
 
     container.querySelector('#quiz-refresh-items-btn')?.addEventListener('click', async () => {
       resetQuizProgress();
-      await loadItems(false, true);
+      await loadItems(Boolean(selectedItem), true);
     });
 
     container.querySelector('#quiz-start-btn')?.addEventListener('click', async () => {
       await startQuiz();
+    });
+
+    container.querySelector('#quiz-reset-answers-btn')?.addEventListener('click', async () => {
+      await resetSolvedAnswers();
     });
 
     container.querySelector('#quiz-reset-btn')?.addEventListener('click', async () => {
@@ -140,6 +152,7 @@ export function renderQuizView(container) {
         title: branch.lesson,
         subtitle: examType + ' · Branş',
         availableCount: branch.availableCount,
+        totalCount: branch.totalCount,
       }));
     }
 
@@ -151,6 +164,7 @@ export function renderQuizView(container) {
       lesson: topic.lesson,
       topicName: topic.topicName,
       availableCount: topic.availableCount,
+      totalCount: topic.totalCount,
     }));
   };
 
@@ -253,6 +267,37 @@ export function renderQuizView(container) {
     }
   };
 
+  const resetSolvedAnswers = async () => {
+    const selectedItem = state.items.find(item => item.key === state.selectedKey) || null;
+    const scopeLabel = selectedItem
+      ? (state.mode === 'branch' ? selectedItem.title + ' branşı' : selectedItem.title + ' konusu')
+      : state.examType;
+    const confirmed = window.confirm(scopeLabel + ' için çözülen sorular sıfırlansın mı?');
+    if (!confirmed) return;
+
+    state.resettingAnswers = true;
+    resetQuizProgress();
+    safeDraw();
+
+    try {
+      const payload = { examType: state.examType };
+      if (state.mode === 'branch' && selectedItem) payload.branchKey = selectedItem.key;
+      if (state.mode === 'topic' && selectedItem) payload.topicKey = selectedItem.key;
+      const result = await resetQuizBookletAnswers(payload);
+      await loadItems(false, true);
+      showToast({
+        title: 'Quiz ilerlemesi sıfırlandı',
+        message: (selectedItem ? scopeLabel : state.examType) + ' için ' + Number(result.deletedCount || 0) + ' cevap silindi.',
+        type: 'success',
+      });
+    } catch (error) {
+      showToast({ title: 'Sıfırlama başarısız', message: error.message, type: 'error' });
+    } finally {
+      state.resettingAnswers = false;
+      safeDraw();
+    }
+  };
+
   loadItems(false, true);
   safeDraw();
 }
@@ -304,7 +349,7 @@ function renderItemField(items, selectedItem, state) {
       ? items.map(item => renderItemButton(item, selectedItem?.key === item.key, state.loadingItems)).join('')
       : '<button class="btn btn-secondary" type="button" id="quiz-refresh-items-btn"' + (state.loadingItems ? ' disabled' : '') + '>Listeyi Yenile</button>',
     '</div>',
-    selectedItem ? '<div style="font-size:var(--font-sm);color:var(--text-secondary);">Seçili ' + label.toLowerCase() + ': ' + escapeHtml(selectedItem.title) + ' (' + selectedItem.availableCount + ')</div>' : '',
+    selectedItem ? '<div style="font-size:var(--font-sm);color:var(--text-secondary);">Seçili ' + label.toLowerCase() + ': ' + escapeHtml(selectedItem.title) + ' (' + selectedItem.availableCount + ' / ' + Number(selectedItem.totalCount || selectedItem.availableCount || 0) + ')</div>' : '',
     '</div>',
   ].join('');
 }
@@ -314,7 +359,7 @@ function renderItemButton(item, isSelected, loadingItems) {
     '<button class="btn ' + (isSelected ? 'btn-primary' : 'btn-secondary') + ' quiz-select-item-btn" type="button" data-key="' + escapeHtml(item.key) + '"' +
     (loadingItems ? ' disabled' : '') +
     ' style="justify-content:flex-start;text-align:left;white-space:normal;height:auto;min-height:48px;">' +
-    '<span><strong>' + escapeHtml(item.title) + '</strong><br><span style="font-size:var(--font-xs);color:inherit;opacity:.82;">' + escapeHtml(item.subtitle) + ' · ' + item.availableCount + ' soru</span></span>' +
+    '<span><strong>' + escapeHtml(item.title) + '</strong><br><span style="font-size:var(--font-xs);color:inherit;opacity:.82;">' + escapeHtml(item.subtitle) + ' · ' + item.availableCount + ' / ' + Number(item.totalCount || item.availableCount || 0) + ' soru</span></span>' +
     '</button>'
   );
 }
@@ -325,9 +370,9 @@ function renderSelectionHint(state, selectedItem, visibleCount) {
   if (!visibleCount) return 'Arama filtresine uyan kayıt yok.';
   if (!selectedItem) return 'Quiz başlatmak için bir branş veya konu seçin.';
   if (selectedItem.availableCount < 10) {
-    return escapeHtml(selectedItem.title) + ' için yalnızca ' + selectedItem.availableCount + ' yeni soru var.';
+    return escapeHtml(selectedItem.title) + ' için ' + selectedItem.availableCount + ' / ' + Number(selectedItem.totalCount || selectedItem.availableCount || 0) + ' soru çözülmemiş durumda.';
   }
-  return escapeHtml(selectedItem.title) + ' için ' + selectedItem.availableCount + ' cevaplanmamış soru hazır.';
+  return escapeHtml(selectedItem.title) + ' için ' + selectedItem.availableCount + ' / ' + Number(selectedItem.totalCount || selectedItem.availableCount || 0) + ' soru şu an çözüme açık.';
 }
 
 function renderEmptyQuizState() {

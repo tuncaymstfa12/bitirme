@@ -66,6 +66,7 @@ logs/
 # Local Data, Uploads, and Generated Assets
 # ===========================
 storage/tests/
+storage/debug-*/
 server/data/*.json
 !server/data/.gitkeep
 

@@ -1,16 +1,20 @@
 /**
  * Dashboard View
- * Overview: upcoming exams, today's schedule, priority rankings, insights
+ * Overview: upcoming exams, today's schedule, priority rankings
  */
 
 import { store } from '../data/store.js';
 import { t } from '../data/i18n.js';
 import { rankTopics, getPriorityLabel, getPriorityClass } from '../engine/priorityCalculator.js';
-import { generateInsights } from '../engine/performanceAnalyzer.js';
 import { getScheduleStats } from '../engine/scheduler.js';
 import { formatDate, formatTime, daysUntil, showToast, drawDonutChart, formatLocalDate } from './components.js';
 
 export function renderDashboard(container) {
+  if (syncPastSessionsToMissed()) {
+    renderDashboard(container);
+    return;
+  }
+
   const exams = store.getExams();
   const topics = store.getTopics();
   const sessions = store.getSessions();
@@ -19,10 +23,11 @@ export function renderDashboard(container) {
 
   const ranked = rankTopics(exams, topics, mockResults, settings.weights);
   const stats = getScheduleStats(sessions, topics, exams);
-  const insights = generateInsights(exams, topics, mockResults, sessions);
 
   const todayStr = formatLocalDate(new Date());
-  const todaySessions = sessions.filter(s => s.date === todayStr && s.status !== 'break');
+  const todaySessions = sessions
+    .filter(s => s.date === todayStr && s.status !== 'break')
+    .sort((a, b) => (a.startHour * 60 + a.startMinute) - (b.startHour * 60 + b.startMinute));
 
   // Exams around today (last 30 days + next 30 days)
   const upcomingExams = exams
@@ -95,21 +100,6 @@ export function renderDashboard(container) {
           </div>
         </div>
 
-        <!-- Insights -->
-        ${insights.length > 0 ? `
-        <div class="section">
-          <h3 class="section-title">💡 ${t('dashboard.insights')}</h3>
-          ${insights.map(insight => `
-            <div class="insight-card ${insight.type}">
-              <span class="insight-icon">${insight.icon}</span>
-              <div>
-                <div class="insight-title">${insight.title}</div>
-                <div class="insight-message">${insight.message}</div>
-              </div>
-            </div>
-          `).join('')}
-        </div>
-        ` : ''}
       </div>
 
       <!-- Right Column -->
@@ -207,6 +197,38 @@ export function renderDashboard(container) {
   }
 }
 
+function syncPastSessionsToMissed() {
+  const now = new Date();
+  const sessions = store.getSessions();
+  let updated = 0;
+
+  sessions.forEach(session => {
+    if (session.status !== 'scheduled' || session.startHour == null) return;
+    if (!isSessionPast(session, now)) return;
+    store.updateSession(session.id, { status: 'missed', autoMissed: true });
+    updated += 1;
+  });
+
+  return updated > 0;
+}
+
+function isSessionPast(session, now) {
+  const parts = String(session.date || '').split('-');
+  if (parts.length !== 3) return false;
+
+  const sessionTime = new Date(
+    Number(parts[0]),
+    Number(parts[1]) - 1,
+    Number(parts[2]),
+    Number(session.startHour || 0),
+    Number(session.startMinute || 0),
+    0,
+    0
+  );
+
+  return sessionTime < now;
+}
+
 function bindDashboardEvents(container) {
   // Mark session complete
   container.querySelectorAll('.session-complete-btn').forEach(btn => {
@@ -237,7 +259,7 @@ function bindDashboardEvents(container) {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const id = btn.dataset.id;
-      store.updateSession(id, { status: 'missed' });
+      store.updateSession(id, { status: 'missed', autoMissed: false });
       showToast({ title: t('dashboard.sessionMissed'), message: t('dashboard.sessionMissedMsg'), type: 'warning' });
       renderDashboard(container);
     });

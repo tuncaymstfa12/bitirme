@@ -139,6 +139,7 @@ function showGenerateModal(container){
     var startDate=ov.querySelector('#gp-start').value,endDate=ov.querySelector('#gp-end').value;
     var maxDaily=parseInt(ov.querySelector('#gp-maxslots').value),breakDuration=parseInt(ov.querySelector('#gp-break').value),mode=ov.querySelector('#gp-mode').value;
     var hourStart=parseInt(ov.querySelector('#gp-hour-start').value),hourEnd=parseInt(ov.querySelector('#gp-hour-end').value);
+    if(endDate<startDate){showToast({title:'Uyarı',message:'Bitiş tarihi başlangıç tarihinden önce olamaz.',type:'warning'});return;}
     if(hourEnd<=hourStart){showToast({title:'Uyarı',message:'Bitiş saati başlangıç saatinden sonra olmalı.',type:'warning'});return;}
     var sel=[];ov.querySelectorAll('.gp-exam:checked').forEach(function(cb){sel.push(cb.value);});
     if(!sel.length){showToast({title:'Uyarı',message:'En az bir sınav seçin.',type:'warning'});return;}
@@ -150,16 +151,39 @@ function showGenerateModal(container){
     var cw=JSON.parse(JSON.stringify(s.weights));
     if(mode==='urgent'){cw.urgency=0.5;cw.topicWeight=0.2;cw.weakness=0.15;cw.performance=0.15;}
     if(mode==='weak'){cw.urgency=0.25;cw.topicWeight=0.15;cw.weakness=0.45;cw.performance=0.15;}
-    var mocks=store.getMockResults(),hist=store.getSessions().filter(function(x){return x.status==='completed'||x.status==='missed';});
-    var res=fullReschedule(selExams,selTopics,mocks,customAvail,cc,cw);
-    res.sessions=res.sessions.filter(function(x){return x.date>=startDate&&x.date<=endDate;});
-    store.setSessions(hist.concat(res.sessions));
-    var plannedCnt=res.sessions.filter(function(x){return x.status==='scheduled';}).length;
+    var mocks=store.getMockResults(),existingSessions=store.getSessions();
+    var res=fullReschedule(selExams,selTopics,mocks,customAvail,cc,cw,startDate,endDate);
+    var mergeRes=mergeSessionsPreservingExisting(existingSessions,res.sessions);
+    store.setSessions(mergeRes.sessions);
+    var plannedCnt=mergeRes.addedCount;
     if(plannedCnt>0){
-      showToast({title:t('schedule.planGenerated'),message:plannedCnt+' oturum planlandı ('+(mode==='urgent'?'Acil':mode==='weak'?'Zayıf':'Dengeli')+').',type:'success'});
+      var skippedText=mergeRes.skippedCount>0?' · '+mergeRes.skippedCount+' cakisan slot atlandi':'';
+      showToast({title:t('schedule.planGenerated'),message:plannedCnt+' oturum eklendi ('+(mode==='urgent'?'Acil':mode==='weak'?'Zayıf':'Dengeli')+')'+skippedText+'.',type:'success'});
     } else {
-      showToast({title:'Planlanamadı',message:'Seçilen saat aralığında oturum oluşturulamadı. Saat aralığını veya slot sayısını değiştirin.',type:'warning'});
+      showToast({title:'Planlanamadı',message:mergeRes.skippedCount>0?'Yeni plan mevcut oturumlarla cakistigi icin eklenemedi.':'Seçilen saat aralığında oturum oluşturulamadı. Saat aralığını veya slot sayısını değiştirin.',type:'warning'});
     }
     closeModal();currentWeekStart=getMonday(new Date(startDate));renderScheduleView(container);
   });
+}
+
+function mergeSessionsPreservingExisting(existingSessions,newSessions){
+  var occupied=new Set(existingSessions.filter(function(s){return s.status!=='missed';}).map(getSessionSlotKey));
+  var merged=existingSessions.slice();
+  var addedCount=0,skippedCount=0;
+  newSessions.forEach(function(session){
+    var key=getSessionSlotKey(session);
+    if(occupied.has(key)){skippedCount++;return;}
+    occupied.add(key);
+    merged.push(session);
+    addedCount++;
+  });
+  merged.sort(function(a,b){
+    if(a.date!==b.date)return a.date.localeCompare(b.date);
+    return (a.startHour*60+a.startMinute)-(b.startHour*60+b.startMinute);
+  });
+  return { sessions: merged, addedCount: addedCount, skippedCount: skippedCount };
+}
+
+function getSessionSlotKey(session){
+  return [session.date,session.startHour,session.startMinute].join('|');
 }

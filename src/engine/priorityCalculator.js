@@ -8,7 +8,7 @@
  * Calculate priority score for a single topic
  * @returns {number} Priority score between 0 and 1
  */
-export function calculatePriorityScore(topic, exam, mockResults = [], weights = null) {
+export function calculatePriorityScore(topic, exam, mockResults = [], weights = null, referenceDate = null) {
   const w = weights || {
     urgency: 0.35,
     topicWeight: 0.25,
@@ -16,7 +16,7 @@ export function calculatePriorityScore(topic, exam, mockResults = [], weights = 
     performance: 0.15,
   };
 
-  const urgency = getUrgencyScore(exam.date);
+  const urgency = getUrgencyScore(exam.date, referenceDate);
   const topicW = normalizeWeight(topic.weight);
   const weakness = getWeaknessScore(topic.selfAssessment);
   const perfGap = getPerformanceGap(topic.id, mockResults);
@@ -68,6 +68,7 @@ export function rankTopics(exams, topics, mockResults = [], weights = null) {
     ranked.push({
       topic,
       exam,
+      weightsUsed: { ...w },
       score: Math.round(score * 1000) / 1000,
       breakdown: {
         urgency: Math.round(urgency * 1000) / 1000,
@@ -87,8 +88,8 @@ export function rankTopics(exams, topics, mockResults = [], weights = null) {
  * Urgency score based on exam proximity
  * Closer exams → higher urgency (non-linear decay)
  */
-export function getUrgencyScore(examDate) {
-  const now = new Date();
+export function getUrgencyScore(examDate, referenceDate = null) {
+  const now = referenceDate ? new Date(referenceDate) : new Date();
   now.setHours(0, 0, 0, 0);
   const exam = new Date(examDate);
   exam.setHours(0, 0, 0, 0);
@@ -96,11 +97,11 @@ export function getUrgencyScore(examDate) {
   const daysUntil = Math.max(0, (exam - now) / (1000 * 60 * 60 * 24));
   
   if (daysUntil <= 0) return 1.0; // Exam today or passed
-  if (daysUntil <= 1) return 0.95;
-  if (daysUntil <= 3) return 0.85;
-  if (daysUntil <= 7) return 0.7;
-  if (daysUntil <= 14) return 0.5;
-  if (daysUntil <= 30) return 0.3;
+  if (daysUntil <= 1) return 0.98;
+  if (daysUntil <= 3) return 0.92;
+  if (daysUntil <= 7) return 0.8;
+  if (daysUntil <= 14) return 0.58;
+  if (daysUntil <= 30) return 0.32;
   return 0.1;
 }
 

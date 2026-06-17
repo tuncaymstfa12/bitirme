@@ -155,20 +155,20 @@ export function handleMissedSessions(
 /**
  * Full reschedule from scratch (e.g., when exams change)
  */
-export function fullReschedule(exams, topics, mockResults, availability, constraints, weights) {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const todayStr = formatLocalDate(today);
+export function fullReschedule(exams, topics, mockResults, availability, constraints, weights, startDateOverride = null, endDateOverride = null) {
+  const planningStart = startDateOverride ? new Date(startDateOverride) : new Date();
+  planningStart.setHours(0, 0, 0, 0);
+  const planningStartStr = formatLocalDate(planningStart);
 
-  const futureExams = exams.filter(e => new Date(e.date) >= today);
+  const futureExams = exams.filter(e => new Date(e.date) >= planningStart);
   if (futureExams.length === 0) {
     return { sessions: [], warnings: ['No future exams.'] };
   }
 
-  const latestExamDate = futureExams.sort((a, b) => new Date(b.date) - new Date(a.date))[0].date;
+  const latestExamDate = endDateOverride || futureExams.sort((a, b) => new Date(b.date) - new Date(a.date))[0].date;
   const ranked = rankTopics(futureExams, topics, mockResults, weights);
 
-  const sessions = generateSchedule(ranked, availability, constraints, todayStr, latestExamDate);
+  const sessions = generateSchedule(ranked, availability, constraints, planningStartStr, latestExamDate);
   return { sessions, warnings: [] };
 }
 

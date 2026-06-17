@@ -5,6 +5,7 @@
  */
 
 import { createStudySession, generateId } from '../data/models.js';
+import { getUrgencyScore } from './priorityCalculator.js';
 import { validateSchedule } from './rules.js';
 
 function formatLocalDate(d) {
@@ -99,70 +100,34 @@ function allocateSlots(rankedTopics, slots, constraints) {
   // Sort dates chronologically
   const dates = Object.keys(slotsByDate).sort();
 
-  // Round-robin allocation: iterate through dates, assign highest priority first
-  let allocationComplete = false;
-  let passCount = 0;
-  const maxPasses = 10;
+  for (const date of dates) {
+    if (!dailyCounts[date]) dailyCounts[date] = { total: 0, byExamId: {}, topicIds: new Set() };
+    const dateSlots = slotsByDate[date];
 
-  while (!allocationComplete && passCount < maxPasses) {
-    allocationComplete = true;
-    passCount++;
+    for (const slot of dateSlots) {
+      if (slot.allocated) continue;
+      if (dailyCounts[date].total >= constraints.maxDailySlotsCount) break;
 
-    for (const need of topicSlotNeeds) {
-      if (need.slotsAllocated >= need.slotsNeeded) continue;
-      allocationComplete = false;
+      const candidate = pickBestTopicForDate(topicSlotNeeds, sessions, dailyCounts, lastTopicDate, date, minSubjects, constraints);
+      if (!candidate) continue;
 
-      for (const date of dates) {
-        if (need.slotsAllocated >= need.slotsNeeded) break;
+      slot.allocated = true;
+      const session = createStudySession({
+        topicId: candidate.topic.id,
+        slotId: slot.id,
+        date: slot.date,
+        startHour: slot.startHour,
+        startMinute: slot.startMinute,
+        durationMinutes: slot.durationMinutes,
+        status: 'scheduled',
+      });
+      sessions.push(session);
 
-        // Initialize daily tracking
-        if (!dailyCounts[date]) dailyCounts[date] = { total: 0, byExamId: {}, topicIds: new Set() };
-
-        // Check daily max
-        if (dailyCounts[date].total >= constraints.maxDailySlotsCount) continue;
-
-        // Check consecutive same-subject limit
-        const dateSlots = slotsByDate[date];
-        const consecutiveCount = countConsecutiveForTopic(sessions, date, need.topic.id);
-        if (consecutiveCount >= constraints.maxConsecutiveSameSubject) continue;
-
-        // Spaced repetition: avoid same topic on consecutive days if gap required
-        if (lastTopicDate[need.topic.id]) {
-          const lastDate = new Date(lastTopicDate[need.topic.id]);
-          const currentDate = new Date(date);
-          const dayDiff = (currentDate - lastDate) / (1000 * 60 * 60 * 24);
-          if (dayDiff >= 0 && dayDiff < constraints.spacedRepetitionGapDays) continue;
-        }
-
-        // Enforce minDailySubjects: if the day has 4+ slots but too few unique subjects,
-        // skip topics already covered today to force variety
-        if (dailyCounts[date].total >= 4 && dailyCounts[date].topicIds.size < minSubjects) {
-          if (dailyCounts[date].topicIds.has(need.topic.id)) continue;
-        }
-
-        // Find an available slot
-        const availableSlot = dateSlots.find(s => !s.allocated);
-        if (!availableSlot) continue;
-
-        // Allocate
-        availableSlot.allocated = true;
-        const session = createStudySession({
-          topicId: need.topic.id,
-          slotId: availableSlot.id,
-          date: availableSlot.date,
-          startHour: availableSlot.startHour,
-          startMinute: availableSlot.startMinute,
-          durationMinutes: availableSlot.durationMinutes,
-          status: 'scheduled',
-        });
-        sessions.push(session);
-
-        need.slotsAllocated++;
-        dailyCounts[date].total++;
-        dailyCounts[date].byExamId[need.exam.id] = (dailyCounts[date].byExamId[need.exam.id] || 0) + 1;
-        dailyCounts[date].topicIds.add(need.topic.id);
-        lastTopicDate[need.topic.id] = date;
-      }
+      candidate.slotsAllocated++;
+      dailyCounts[date].total++;
+      dailyCounts[date].byExamId[candidate.exam.id] = (dailyCounts[date].byExamId[candidate.exam.id] || 0) + 1;
+      dailyCounts[date].topicIds.add(candidate.topic.id);
+      lastTopicDate[candidate.topic.id] = date;
     }
   }
 
@@ -173,6 +138,80 @@ function allocateSlots(rankedTopics, slots, constraints) {
   });
 
   return sessions;
+}
+
+function pickBestTopicForDate(topicSlotNeeds, sessions, dailyCounts, lastTopicDate, date, minSubjects, constraints) {
+  const rankedCandidates = buildDateCandidates(topicSlotNeeds, sessions, dailyCounts, lastTopicDate, date, minSubjects, constraints, true);
+  if (rankedCandidates.length > 0) return rankedCandidates[0].need;
+
+  const relaxedCandidates = buildDateCandidates(topicSlotNeeds, sessions, dailyCounts, lastTopicDate, date, minSubjects, constraints, false);
+  return relaxedCandidates.length > 0 ? relaxedCandidates[0].need : null;
+}
+
+function buildDateCandidates(topicSlotNeeds, sessions, dailyCounts, lastTopicDate, date, minSubjects, constraints, enforceVariety) {
+  return topicSlotNeeds
+    .filter(need => canAllocateTopicOnDate(need, sessions, dailyCounts, lastTopicDate, date, minSubjects, constraints, enforceVariety))
+    .map(need => ({
+      need,
+      dynamicScore: getDateAwarePriorityScore(need, date),
+    }))
+    .sort((left, right) => {
+      if (right.dynamicScore !== left.dynamicScore) return right.dynamicScore - left.dynamicScore;
+      return right.need.score - left.need.score;
+    });
+}
+
+function canAllocateTopicOnDate(need, sessions, dailyCounts, lastTopicDate, date, minSubjects, constraints, enforceVariety) {
+  if (need.slotsAllocated >= need.slotsNeeded) return false;
+  if (dailyCounts[date].total >= constraints.maxDailySlotsCount) return false;
+
+  const consecutiveCount = countConsecutiveForTopic(sessions, date, need.topic.id);
+  if (consecutiveCount >= constraints.maxConsecutiveSameSubject) return false;
+
+  if (lastTopicDate[need.topic.id]) {
+    const lastDate = new Date(lastTopicDate[need.topic.id]);
+    const currentDate = new Date(date);
+    const dayDiff = (currentDate - lastDate) / (1000 * 60 * 60 * 24);
+    if (dayDiff >= 0 && dayDiff < constraints.spacedRepetitionGapDays) return false;
+  }
+
+  if (enforceVariety && dailyCounts[date].total >= 4 && dailyCounts[date].topicIds.size < minSubjects) {
+    if (dailyCounts[date].topicIds.has(need.topic.id)) return false;
+  }
+
+  return true;
+}
+
+function getDateAwarePriorityScore(need, date) {
+  const weights = need.weightsUsed || {
+    urgency: 0.35,
+    topicWeight: 0.25,
+    weakness: 0.25,
+    performance: 0.15,
+  };
+
+  const baseUrgency = Number(need.breakdown?.urgency || 0);
+  const dateUrgency = getUrgencyScore(need.exam.date, date);
+  const urgencyAdjustedScore = need.score - (weights.urgency * baseUrgency) + (weights.urgency * dateUrgency);
+  const examFocusBoost = getExamFocusBoost(need.exam.date, date);
+
+  return Math.round((urgencyAdjustedScore + examFocusBoost) * 1000) / 1000;
+}
+
+function getExamFocusBoost(examDate, date) {
+  const exam = new Date(examDate);
+  const focusDate = new Date(date);
+  exam.setHours(0, 0, 0, 0);
+  focusDate.setHours(0, 0, 0, 0);
+
+  const dayDiff = Math.round((exam - focusDate) / (1000 * 60 * 60 * 24));
+
+  if (dayDiff < 0) return -0.4;
+  if (dayDiff === 0) return 0.45;
+  if (dayDiff === 1) return 0.25;
+  if (dayDiff <= 3) return 0.12;
+  if (dayDiff <= 7) return 0.05;
+  return 0;
 }
 
 /**

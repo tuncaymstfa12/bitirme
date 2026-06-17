@@ -85,6 +85,7 @@ def normalize_marker_text(text):
     cleaned = clean_spaces(text)
     cleaned = cleaned.replace('．', '.').replace('。', '.')
     cleaned = cleaned.replace('l.', '1.').replace('I.', '1.')
+    cleaned = re.sub(r'^[^0-9]{1,3}\s+(\d{1,3}\s*[\.\)\-:])', r'\1', cleaned)
     return cleaned
 
 
@@ -318,6 +319,18 @@ def find_section_for_page(sections, page_number):
     return None
 
 
+def find_section_for_page_content(page, sections, page_number, exam_type=''):
+    if page:
+        header_lines = [line['text'] for line in page['lines'] if line['yMin'] < 120]
+        header_text = ' '.join(header_lines)
+        definition = find_section_definition(header_text, exam_type)
+        if definition:
+            for section in sections:
+                if section['sectionCode'] == definition['code']:
+                    return section
+    return find_section_for_page(sections, page_number)
+
+
 def collect_answer_key_headers(page, exam_type, max_header_y=160):
     top_lines = [line for line in page['lines'] if line['yMin'] <= max_header_y]
     if not top_lines:
@@ -371,19 +384,29 @@ def is_answer_key_page(page, sections, exam_type):
         for header in collect_answer_key_headers(page, exam_type)
         if any(section['sectionCode'] == header['sectionCode'] for section in sections)
     }
-    return len(matched_codes) >= min(2, len(sections))
+    if len(matched_codes) < min(2, len(sections)):
+        return False
+    return has_answer_key_density(page, min_rows=10)
 
 
 def count_answer_key_rows(page):
     number_rows = 0
     answer_rows = 0
+    pair_rows = 0
     for line in page['lines']:
         text = clean_spaces(line['text'])
         if re.fullmatch(r'(\d{1,3})\.', text):
             number_rows += 1
         elif re.fullmatch(r'([A-E])', text):
             answer_rows += 1
-    return number_rows, answer_rows
+        elif re.fullmatch(r'(\d{1,3})\.\s*([A-E])', text):
+            pair_rows += 1
+    return number_rows, answer_rows, pair_rows
+
+
+def has_answer_key_density(page, min_rows=10):
+    number_rows, answer_rows, pair_rows = count_answer_key_rows(page)
+    return pair_rows >= min_rows or (number_rows >= min_rows and answer_rows >= min_rows)
 
 
 def cluster_answer_key_columns(tokens, x_slack=24):
@@ -782,7 +805,8 @@ def detect_answer_key_from_pages(pages, sections, exam_type):
 
             number_match = re.fullmatch(r'(\d{1,3})\.', text)
             answer_match = re.fullmatch(r'([A-E])', text)
-            if not number_match and not answer_match:
+            pair_match = re.fullmatch(r'(\d{1,3})\.\s*([A-E])', text)
+            if not number_match and not answer_match and not pair_match:
                 continue
 
             x_center = (line['xMin'] + line['xMax']) / 2
@@ -801,6 +825,9 @@ def detect_answer_key_from_pages(pages, sections, exam_type):
                 row['number'] = str(int(number_match.group(1)))
             elif answer_match:
                 row['answer'] = answer_match.group(1)
+            elif pair_match:
+                row['number'] = str(int(pair_match.group(1)))
+                row['answer'] = pair_match.group(2)
 
         answer_key = {}
         for header in column_headers:
@@ -825,6 +852,45 @@ def apply_answer_key_to_detections(detections, answer_key):
         answer = answer_key.get(detection['sectionCode'], {}).get(str(detection['sectionQuestionNumber']))
         if answer:
             detection['correctAnswer'] = answer
+
+
+def reassign_continuation_pages(detections, sections):
+    if not detections or not sections:
+        return
+
+    section_lookup = {section['sectionCode']: section for section in sections}
+    page_groups = {}
+    for detection in detections:
+        page_groups.setdefault(detection['pageNumber'], []).append(detection)
+
+    previous_section_code = ''
+    previous_max_question = 0
+
+    for page_number in sorted(page_groups):
+        group = page_groups[page_number]
+        section_codes = {item['sectionCode'] for item in group}
+        if len(section_codes) == 1 and previous_section_code:
+            current_section_code = next(iter(section_codes))
+            current_min_question = min(item['sectionQuestionNumber'] for item in group)
+            current_max_question = max(item['sectionQuestionNumber'] for item in group)
+            previous_section = section_lookup.get(previous_section_code)
+
+            if (
+                current_section_code != previous_section_code
+                and previous_section
+                and previous_max_question
+                and current_min_question > previous_max_question
+                and current_max_question <= int(previous_section.get('questionCount') or 0)
+            ):
+                for item in group:
+                    item['sectionCode'] = previous_section['sectionCode']
+                    item['sectionName'] = previous_section['sectionName']
+                    item['sectionOrder'] = previous_section['sectionOrder']
+
+        section_codes = {item['sectionCode'] for item in group}
+        if len(section_codes) == 1:
+            previous_section_code = next(iter(section_codes))
+            previous_max_question = max(item['sectionQuestionNumber'] for item in group)
 
 
 def build_review(args):
@@ -856,7 +922,7 @@ def build_review(args):
         page_info = pages[page_index] if page_index < len(pages) else None
         width_points = page_info['widthPoints'] if page_info else None
         height_points = page_info['heightPoints'] if page_info else None
-        section = find_section_for_page(sections, page_number)
+        section = find_section_for_page_content(page_info, sections, page_number, args.exam_type)
         markers = []
         is_two_column = False
 
@@ -901,6 +967,8 @@ def build_review(args):
                 'manual': False,
                 'crop': marker['crop'],
             })
+
+    reassign_continuation_pages(detections, sections)
 
     detections.sort(key=lambda item: (
         item['sectionOrder'],

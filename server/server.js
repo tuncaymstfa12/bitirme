@@ -168,6 +168,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && path === '/api/quiz/booklet-questions') {
       return await getQuizBookletQuestions(studentId, url, res);
     }
+    if (req.method === 'DELETE' && path === '/api/quiz/booklet-answers') {
+      return await resetQuizBookletAnswers(studentId, req, res);
+    }
 
     const quizBookletAnswerMatch = path.match(/^\/api\/quiz\/booklet-questions\/([a-f0-9-]+)\/answer$/);
     if (quizBookletAnswerMatch && req.method === 'POST') {
@@ -927,6 +930,52 @@ async function answerQuizBookletQuestion(studentId, questionId, req, res) {
   return sendJson(res, 200, mapBookletQuizAnswer(rows[0]));
 }
 
+async function resetQuizBookletAnswers(studentId, req, res) {
+  const body = await readJsonBody(req);
+  const examType = String(body.examType || '').toUpperCase();
+  const lessonKey = String(body.lessonKey || '').trim();
+  const branchKey = String(body.branchKey || '').trim();
+  const topicKey = String(body.topicKey || '').trim();
+
+  if (!BOOKLET_EXAM_TYPES.includes(examType)) {
+    return sendJson(res, 400, { error: 'Geçerli bir sınav türü seçiniz.' });
+  }
+
+  const conditions = ['bt.exam_type = $2'];
+  const values = [studentId, examType];
+  let paramIndex = 3;
+
+  if (topicKey) {
+    const { lesson, topicName } = parseTopicKey(topicKey);
+    if (!lesson || !topicName) {
+      return sendJson(res, 400, { error: 'Geçerli bir konu seçiniz.' });
+    }
+    conditions.push(`q.lesson = $${paramIndex++}`);
+    values.push(lesson);
+    conditions.push(`q.topic_name = $${paramIndex++}`);
+    values.push(topicName);
+  } else if (branchKey) {
+    conditions.push(`q.lesson = $${paramIndex++}`);
+    values.push(branchKey);
+  } else if (lessonKey) {
+    conditions.push(`s.section_code = $${paramIndex++}`);
+    values.push(lessonKey);
+  }
+
+  const { rowCount } = await query(
+    `DELETE FROM student_booklet_answers sba
+     USING booklet_questions q
+     JOIN booklet_tests bt ON bt.id = q.test_id
+     JOIN booklet_sections s ON s.id = q.section_id
+     WHERE sba.student_id = $1
+       AND sba.booklet_question_id = q.id
+       AND ${conditions.join(' AND ')}`,
+    values
+  );
+
+  return sendJson(res, 200, { success: true, deletedCount: Number(rowCount || 0) });
+}
+
 async function getQuizBookletLessonRows(studentId, examType) {
   const { rows } = await query(
     `SELECT
@@ -1392,7 +1441,8 @@ async function mapBookletQuestionForGemini(row) {
     allowedTopics: getAllowedBookletTopics(
       String(row.exam_type || 'TYT').toUpperCase(),
       row.section_name || row.section_code || '',
-      row.section_question_number || row.global_question_order || null
+      row.section_question_number || row.global_question_order || null,
+      row.title || ''
     ),
     imageBase64,
     mimeType: getImageMimeType(imagePath),
@@ -1406,8 +1456,8 @@ function getImageMimeType(filePath) {
   return 'image/png';
 }
 
-function getAllowedBookletTopics(examType, sectionName = '', questionNo = null) {
-  const lessonFilter = inferBookletLessonFilter(examType, sectionName, questionNo);
+function getAllowedBookletTopics(examType, sectionName = '', questionNo = null, testTitle = '') {
+  const lessonFilter = inferBookletLessonFilter(examType, sectionName, questionNo, testTitle);
   if (examType === 'TYT') {
     return flattenCurriculumTopics('TYT', ['tyt'], lessonFilter);
   }
@@ -1423,8 +1473,9 @@ function getAllowedBookletTopics(examType, sectionName = '', questionNo = null) 
   return [];
 }
 
-function inferBookletLessonFilter(examType, sectionName, questionNo) {
+function inferBookletLessonFilter(examType, sectionName, questionNo, testTitle = '') {
   const normalized = removeTurkishMarks(String(sectionName || '').toLowerCase());
+  const normalizedTitle = removeTurkishMarks(String(testTitle || '').toLowerCase());
   const no = Number(questionNo || 0);
 
   if (examType === 'TYT') {
@@ -1437,6 +1488,7 @@ function inferBookletLessonFilter(examType, sectionName, questionNo) {
       return ['Fizik', 'Kimya', 'Biyoloji'];
     }
     if (normalized.includes('sosyal')) {
+      if (normalizedTitle.startsWith('tytdeneme-') && no >= 21) return ['Felsefe'];
       if (no >= 1 && no <= 5) return ['Tarih'];
       if (no >= 6 && no <= 10) return ['Coğrafya'];
       if (no >= 11 && no <= 15) return ['Felsefe'];
@@ -2155,7 +2207,7 @@ async function autoTagBookletTest(testId, req, res) {
   const { rows } = await query(
     `SELECT q.id, q.test_id, q.section_question_number, q.global_question_order, q.image_path,
             q.correct_answer, q.choices, q.lesson, q.topic_name, q.difficulty,
-            s.section_code, s.section_name, s.section_order, bt.exam_type
+            s.section_code, s.section_name, s.section_order, bt.exam_type, bt.title
      FROM booklet_questions q
      JOIN booklet_tests bt ON bt.id = q.test_id
      JOIN booklet_sections s ON s.id = q.section_id
